@@ -1,0 +1,122 @@
+options:
+  parameters:
+    author: ''
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: ''
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: hb
+    hier_block_src_path: '.:'
+    id: SDQ_hier
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: 1-Bit Sigma-Delta
+    window_size: (1000,1000)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [8, 8]
+    rotation: 0
+    state: enabled
+
+blocks:
+- name: epy_block_0
+  id: epy_block
+  parameters:
+    _source_code: "\"\"\"\nEmbedded Python Blocks:\n\nEach time this file is saved,\
+      \ GRC will instantiate the first class it finds\nto get ports and parameters\
+      \ of your block. The arguments to __init__  will\nbe the parameters. All of\
+      \ them are required to have default values!\n\"\"\"\n\nimport numpy as np\n\
+      from gnuradio import gr\n\nclass sigma_delta_1bit(gr.sync_block):\n    \"\"\"\
+      \n    1-Bit First-Order Sigma-Delta Quantizer\n    Expects float32 input in\
+      \ the range [-1.0, 1.0].\n    Outputs float32 values of either 1.0 or -1.0.\n\
+      \    \"\"\"\n    def __init__(self):\n        # Initialize the sync block with\
+      \ 1 float input and 1 float output\n        gr.sync_block.__init__(\n      \
+      \      self,\n            name=\"1-Bit Sigma-Delta\",\n            in_sig=[np.float32],\n\
+      \            out_sig=[np.float32]\n        )\n        \n        # Internal state\
+      \ variables for the modulator loop\n        self.integrator = 0.0\n        self.last_out\
+      \ = 0.0\n\n    def work(self, input_items, output_items):\n        in0 = input_items[0]\n\
+      \        out = output_items[0]\n        \n        # Process sample-by-sample\
+      \ due to the feedback loop\n        for i in range(len(in0)):\n            #\
+      \ 1. Calculate the error (Difference)\n            error = in0[i] - self.last_out\n\
+      \            \n            # 2. Accumulate the error (Integrator)\n        \
+      \    self.integrator += error\n            \n            # 3. 1-bit Quantization\
+      \ (Comparator)\n            if self.integrator >= 0.0:\n                self.last_out\
+      \ = 1.0\n            else:\n                self.last_out = -1.0\n         \
+      \       \n            # Assign to output array\n            out[i] = self.last_out\n\
+      \            \n        return len(out)"
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    _io_cache: ('1-Bit Sigma-Delta', 'sigma_delta_1bit', [], [('0', 'float', 1)],
+      [('0', 'float', 1)], '\n    1-Bit First-Order Sigma-Delta Quantizer\n    Expects
+      float32 input in the range [-1.0, 1.0].\n    Outputs float32 values of either
+      1.0 or -1.0.\n    ', [])
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [312, 208.0]
+    rotation: 0
+    state: enabled
+- name: pad_sink_0
+  id: pad_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    label: Out_1B
+    num_streams: '1'
+    optional: 'False'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [536, 200.0]
+    rotation: 0
+    state: enabled
+- name: pad_source_0
+  id: pad_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    label: In
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_streams: '1'
+    optional: 'False'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [96, 200.0]
+    rotation: 0
+    state: enabled
+
+connections:
+- [epy_block_0, '0', pad_sink_0, '0']
+- [pad_source_0, '0', epy_block_0, '0']
+
+metadata:
+  file_format: 1
+  grc_version: 3.10.9.2
