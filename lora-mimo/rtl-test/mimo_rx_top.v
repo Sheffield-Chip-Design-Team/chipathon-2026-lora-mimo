@@ -235,7 +235,7 @@ module mimo_rx_top (
     // Stage 3b: Schmidl-Cox preamble detector
     // =========================================================================
     wire [31:0] timing_ref;
-    wire signed [31:0] sc_c_i0, sc_c_q0, sc_c_i1, sc_c_q1;
+    wire signed [31:0] sc_c_i0, sc_c_q0;
     wire [15:0] sc_stat;
     wire        sc_hit_dbg;
     wire [1:0]  sc_hit_cnt_dbg;
@@ -245,10 +245,10 @@ module mimo_rx_top (
         .clk          (clk),
         .rst_n        (rst_n),
         .iq_valid     (dcr_valid),
-        .cur_i0 (cur_i[0]), .cur_i1 (cur_i[1]),
-        .cur_q0 (cur_q[0]), .cur_q1 (cur_q[1]),
-        .del_i0 (del_i[0]), .del_i1 (del_i[1]),
-        .del_q0 (del_q[0]), .del_q1 (del_q[1]),
+        .cur_i0 (cur_i[0]),
+        .cur_q0 (cur_q[0]),
+        .del_i0 (del_i[0]),
+        .del_q0 (del_q[0]),
         .delayed_valid  (delayed_valid),
         .sf             (rb_sf_cfg),
         .sc_thr         (rb_sc_thr),
@@ -256,7 +256,6 @@ module mimo_rx_top (
         .sc_lock        (sc_lock),
         .timing_ref     (timing_ref),
         .c_i0 (sc_c_i0), .c_q0 (sc_c_q0),
-        .c_i1 (sc_c_i1), .c_q1 (sc_c_q1),
         .sc_stat              (sc_stat),
         .sc_hit_dbg           (sc_hit_dbg),
         .sc_hit_count_dbg     (sc_hit_cnt_dbg),
