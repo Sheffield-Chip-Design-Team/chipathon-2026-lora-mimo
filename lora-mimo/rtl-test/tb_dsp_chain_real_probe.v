@@ -91,7 +91,7 @@ module tb_dsp_chain_real;
     end
 
     // iq_valid strobe: 1 pulse every 20 cycles
-    reg [7:0]  strobe_cnt;
+    reg [4:0]  strobe_cnt;
     reg        iq_valid;
     integer    stim_idx;
 
@@ -101,7 +101,7 @@ module tb_dsp_chain_real;
     initial begin
         rst_n      = 1'b0;
         iq_valid   = 1'b0;
-        strobe_cnt = 8'd0;
+        strobe_cnt = 5'd0;
         stim_idx   = 0;
         raw_i0 = 8'sd0; raw_q0 = 8'sd0;
         raw_i1 = 8'sd0; raw_q1 = 8'sd0;
@@ -114,11 +114,11 @@ module tb_dsp_chain_real;
 
     always @(posedge clk) begin
         if (!rst_n) begin
-            strobe_cnt <= 8'd0;
+            strobe_cnt <= 5'd0;
             iq_valid   <= 1'b0;
         end else begin
-            if (strobe_cnt == 8'd255) begin
-                strobe_cnt <= 8'd0;
+            if (strobe_cnt == 5'd19) begin
+                strobe_cnt <= 5'd0;
                 if (stim_idx < stim_n) begin
                     iq_valid <= 1'b1;
                     // Same sample to all 4 antennas (single-channel capture)
@@ -131,7 +131,7 @@ module tb_dsp_chain_real;
                     iq_valid <= 1'b0;
                 end
             end else begin
-                strobe_cnt <= strobe_cnt + 8'd1;
+                strobe_cnt <= strobe_cnt + 5'd1;
                 iq_valid   <= 1'b0;
             end
         end
@@ -397,7 +397,7 @@ module tb_dsp_chain_real;
         test_done      = 1'b0;
         out_i_seen_0   = 1'b0;
         out_i_seen_1   = 1'b0;
-        probe_fd      = $fopen("/foss/designs/lora-mimo/rtl-test/remod_probe_osr256.csv", "w");
+        probe_fd      = $fopen("/foss/designs/lora-mimo/rtl-test/remod_probe.csv", "w");
         $fdisplay(probe_fd, "sample,cycle,y_i,y_q,avg_i,avg_q,duty_i,duty_q");
         probe_cycles  = 0;
         remod_i_sum   = 0;
@@ -411,7 +411,7 @@ module tb_dsp_chain_real;
 
     // Total clock cycles for all 15,000 chip samples at 20 cycles/sample
     // = 300,000 cycles + pipeline flush margin
-    localparam TIMEOUT = 5000000;
+    localparam TIMEOUT = 360000;
 
     // Test 1: energy_valid
     always @(posedge clk) begin
@@ -449,11 +449,11 @@ module tb_dsp_chain_real;
         end
     end
 
-    // Test 4: training_done within 256000 cycles of sc_lock (OSR=256: 256/20 × 20000)
+    // Test 4: training_done within 20000 cycles of sc_lock
     always @(posedge clk) begin
         if (rst_n && training_done && t_train_done < 0) begin
             t_train_done = cycle_count;
-            if (t_sc_lock >= 0 && (cycle_count - t_sc_lock) <= 256000) begin
+            if (t_sc_lock >= 0 && (cycle_count - t_sc_lock) <= 20000) begin
                 $display("PASS test4: training_done at cycle %0d (%0d after sc_lock)",
                          cycle_count, cycle_count - t_sc_lock);
                 pass_count = pass_count + 1;
@@ -483,11 +483,11 @@ module tb_dsp_chain_real;
         end
     end
 
-    // Test 6: y_valid within 400 cycles of W_commit (OSR=256: 256/20 × 30)
+    // Test 6: y_valid within 30 cycles of W_commit
     always @(posedge clk) begin
         if (rst_n && y_valid && t_w_commit >= 0 && t_y_valid < 0) begin
             t_y_valid = cycle_count;
-            if ((cycle_count - t_w_commit) <= 400) begin
+            if ((cycle_count - t_w_commit) <= 30) begin
                 $display("PASS test6: y_valid at cycle %0d (%0d after W_commit)  y_i=%0d y_q=%0d",
                          cycle_count, cycle_count - t_w_commit,
                          $signed(y_i), $signed(y_q));

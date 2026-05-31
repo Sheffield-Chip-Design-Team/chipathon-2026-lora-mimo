@@ -52,9 +52,10 @@ module tb_dsp_chain_real;
     // -----------------------------------------------------------------------
     // Clock / reset  (32 MHz)
     // -----------------------------------------------------------------------
-    reg clk, rst_n;
-    initial clk = 0;
+    reg clk, clk_16m, rst_n;
+    initial begin clk = 0; clk_16m = 0; end
     always #15.625 clk = ~clk;
+    always @(posedge clk) clk_16m <= ~clk_16m;
 
     // -----------------------------------------------------------------------
     // Stimulus: load chip-rate binary, feed at 20-cycle strobe
@@ -358,6 +359,8 @@ module tb_dsp_chain_real;
     // Stage 9: SD remodulator
     // -----------------------------------------------------------------------
     wire out_i, out_q;
+    wire signed [7:0] recon_i, recon_q;
+    wire              recon_valid;
 
     sd_remod u_remod (
         .clk_32m(clk),  .rst_n(rst_n),
@@ -365,6 +368,18 @@ module tb_dsp_chain_real;
         .in_valid(y_valid),
         .en(1'b1),
         .out_i(out_i),  .out_q(out_q)
+    );
+
+    sd_decimator u_loop_decim (
+        .clk_32m    (clk),
+        .clk_16m    (clk_16m),
+        .rst_n      (rst_n),
+        .iq_in_i    (out_i),
+        .iq_in_q    (out_q),
+        .decim_ratio(2'd0),
+        .iq_out_i   (recon_i),
+        .iq_out_q   (recon_q),
+        .iq_valid   (recon_valid)
     );
 
     // -----------------------------------------------------------------------
@@ -376,13 +391,8 @@ module tb_dsp_chain_real;
     integer t_sc_lock, t_train_done, t_w_commit, t_y_valid;
     reg     test_done;
     reg     out_i_seen_0, out_i_seen_1;
-    integer probe_fd;
-    integer probe_cycles;
-    integer remod_i_sum;
-    integer remod_q_sum;
-    integer last_y_i;
-    integer last_y_q;
-    integer probe_samples;
+    integer ref_fd, recon_fd;
+    integer ref_count, recon_count;
 
     initial begin
         cycle_count    = 0;
@@ -397,14 +407,12 @@ module tb_dsp_chain_real;
         test_done      = 1'b0;
         out_i_seen_0   = 1'b0;
         out_i_seen_1   = 1'b0;
-        probe_fd      = $fopen("/foss/designs/lora-mimo/rtl-test/remod_probe_osr256.csv", "w");
-        $fdisplay(probe_fd, "sample,cycle,y_i,y_q,avg_i,avg_q,duty_i,duty_q");
-        probe_cycles  = 0;
-        remod_i_sum   = 0;
-        remod_q_sum   = 0;
-        last_y_i      = 0;
-        last_y_q      = 0;
-        probe_samples = 0;
+        ref_fd      = $fopen("/foss/designs/lora-mimo/rtl-test/loopback_y_ref.csv", "w");
+        recon_fd    = $fopen("/foss/designs/lora-mimo/rtl-test/loopback_recon.csv", "w");
+        $fdisplay(ref_fd, "idx,cycle,i,q");
+        $fdisplay(recon_fd, "idx,cycle,i,q");
+        ref_count   = 0;
+        recon_count = 0;
     end
 
     always @(posedge clk) if (rst_n) cycle_count <= cycle_count + 1;
@@ -449,11 +457,11 @@ module tb_dsp_chain_real;
         end
     end
 
-    // Test 4: training_done within 256000 cycles of sc_lock (OSR=256: 256/20 × 20000)
+    // Test 4: training_done within 250000 cycles of sc_lock
     always @(posedge clk) begin
         if (rst_n && training_done && t_train_done < 0) begin
             t_train_done = cycle_count;
-            if (t_sc_lock >= 0 && (cycle_count - t_sc_lock) <= 256000) begin
+            if (t_sc_lock >= 0 && (cycle_count - t_sc_lock) <= 250000) begin
                 $display("PASS test4: training_done at cycle %0d (%0d after sc_lock)",
                          cycle_count, cycle_count - t_sc_lock);
                 pass_count = pass_count + 1;
@@ -483,11 +491,11 @@ module tb_dsp_chain_real;
         end
     end
 
-    // Test 6: y_valid within 400 cycles of W_commit (OSR=256: 256/20 × 30)
+    // Test 6: y_valid within 300 cycles of W_commit
     always @(posedge clk) begin
         if (rst_n && y_valid && t_w_commit >= 0 && t_y_valid < 0) begin
             t_y_valid = cycle_count;
-            if ((cycle_count - t_w_commit) <= 400) begin
+            if ((cycle_count - t_w_commit) <= 300) begin
                 $display("PASS test6: y_valid at cycle %0d (%0d after W_commit)  y_i=%0d y_q=%0d",
                          cycle_count, cycle_count - t_w_commit,
                          $signed(y_i), $signed(y_q));
@@ -532,33 +540,22 @@ module tb_dsp_chain_real;
         end
     end
 
-    // Probe remod output against held combiner samples
+    // Capture loopback reference and reconstructed samples
     always @(posedge clk) begin
-        if (rst_n && t_y_valid >= 0) begin
-            if (probe_cycles > 0 && y_valid) begin
-                $fdisplay(probe_fd, "%0d,%0d,%0d,%0d,%0d,%0d,%0d,%0d",
-                          probe_samples, cycle_count, last_y_i, last_y_q,
-                          (remod_i_sum * 127) / probe_cycles,
-                          (remod_q_sum * 127) / probe_cycles,
-                          remod_i_sum, remod_q_sum);
-                probe_samples = probe_samples + 1;
-                probe_cycles = 0;
-                remod_i_sum = 0;
-                remod_q_sum = 0;
-            end
+        if (rst_n && y_valid) begin
+            $fdisplay(ref_fd, "%0d,%0d,%0d,%0d", ref_count, cycle_count, $signed(y_i), $signed(y_q));
+            ref_count = ref_count + 1;
+        end
+    end
 
-            if (y_valid) begin
-                last_y_i = $signed(y_i);
-                last_y_q = $signed(y_q);
-            end
-
-            remod_i_sum = remod_i_sum + (out_i ? 1 : -1);
-            remod_q_sum = remod_q_sum + (out_q ? 1 : -1);
-            probe_cycles = probe_cycles + 1;
-
-            if (probe_samples == 512) begin
-                $display("PROBE complete: wrote %0d remod samples", probe_samples);
-                $fclose(probe_fd);
+    always @(posedge clk_16m) begin
+        if (rst_n && recon_valid) begin
+            $fdisplay(recon_fd, "%0d,%0d,%0d,%0d", recon_count, cycle_count, $signed(recon_i), $signed(recon_q));
+            recon_count = recon_count + 1;
+            if (recon_count == 2047) begin
+                $display("LOOPBACK probe complete: ref=%0d recon=%0d", ref_count, recon_count + 1);
+                $fclose(ref_fd);
+                $fclose(recon_fd);
                 $finish;
             end
         end
