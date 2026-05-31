@@ -234,7 +234,7 @@ All figures are Yosys synthesis with `gf180mcu_as_sc_mcu7t3v3` TT/25°C/3.3 V
 | `sc_detector` | 561 k | 305 k | 193 k | 193 k | **164 k** | **−397 k** |
 | `mrc_combiner` | 195 k | 121 k | 121 k | 121 k | **121 k** | −74 k |
 | `weight_gen` | 298 k | 184 k | 120 k | 120 k | **120 k** | **−178 k** |
-| `training_acc` | 211 k | 119 k | 119 k | 119 k | **119 k** | −92 k |
+| `training_acc` ² | 211 k | 119 k | 119 k | 119 k | **132 k** | — |
 | `reg_bank` | — | — | 103 k | 103 k | **103 k** | — |
 | `energy_meas` | — | 98 k | 98 k | **75 k** | **75 k** | **−23 k** |
 | `picorv32_pcpi_mul/div` | — | — | 69 k | 69 k | **69 k** | — |
@@ -247,9 +247,10 @@ All figures are Yosys synthesis with `gf180mcu_as_sc_mcu7t3v3` TT/25°C/3.3 V
 | `spi_slave` | — | — | 17 k | 17 k | **17 k** | — |
 | `spi_master` | — | — | 10 k | 10 k | **10 k** | — |
 | `irq_ctrl` + `ahb_lite_bus` | — | — | 5 k | 5 k | **5 k** | — |
-| **Stdcell total** | **~2,197 k** | **~1,319 k** | **~1,687 k** ¹ | **~1,616 k** | **~1,587 k** | |
+| **Stdcell total** | **~2,197 k** | **~1,319 k** | **~1,687 k** ¹ | **~1,616 k** | **~1,566 k** | |
 
 ¹ Round 2 total includes CPU and non-DSP blocks not counted in Round 1.
+² `training_acc` Round 2 figure (119 k) was local area excluding `signed_mul8_pipe` submodules. Round 3 figure (132 k) is top-module total including 2 × `signed_mul8_pipe` (17 k). True logic reduction is −21 k measured in hierarchical context (153 k → 132 k); stdcell total updated accordingly.
 
 #### SRAM macros
 
@@ -263,13 +264,14 @@ All figures are Yosys synthesis with `gf180mcu_as_sc_mcu7t3v3` TT/25°C/3.3 V
 
 | Category | µm² |
 |---|---|
-| Stdcell | ~1,587 k |
+| Stdcell | ~1,566 k |
 | SRAM macros | ~520 k |
-| **Total logic** | **~2,107 k ≈ 2.11 mm²** |
+| **Total logic** | **~2,086 k ≈ 2.09 mm²** |
 | **Realistic die at FP_CORE_UTIL=40** | **~3.8 mm²** (confirmed by job 1127 floorplan) |
 
 #### Changes made in session 3 (2026-06-01):
 - `sc_detector`: NR=2 → NR=1 (single-channel preamble lock), 32→24-bit accumulators, 17→13-bit eval multiplier. 193 k → 164 k (−29 k). SGE job 1138.
+- `training_acc`: 4 shared 8×8 muls → 2 muls, 2 sub-cycles per antenna state (sub0=zi, sub1=zq). 11-cycle sample budget vs ≥20-cycle iq\_valid interval. −21 k in hierarchical context (153 k → 132 k). SGE job 1141.
 
 #### Changes made in session 2 (2026-05-31):
 - `energy_meas`: 8 parallel squarers → 1 shared TDM squarer, 9-step FSM. 98 k → 75 k (−23 k). SGE job 1120.
