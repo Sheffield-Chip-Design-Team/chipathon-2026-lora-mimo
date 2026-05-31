@@ -218,42 +218,76 @@ Timing closes comfortably at every corner. Routing is clean. The deferred-error 
 
 **Cross-cutting risk — STA against uncharacterised OCD `.lib`:** every PicoRV32 slack number above is computed against a Liberty file whose numerical tables are byte-for-byte copies of the FD 512×8 5 V `.lib`. SPICE characterisation scaffolding has been added at [`characterization/sram_ocd/`](../characterization/sram_ocd/README.md) and [`characterization/sram_fd/`](../characterization/sram_fd/README.md). See [Memory Strategy.md](Memory%20Strategy.md) "OCD Liberty timing model is unverified" for the full audit.
 
-### DSP-chain area — updated 2026-05-31
+### Full chip block size list — updated 2026-05-31 (session 2)
 
-Three rounds of RTL area reduction have been applied since the original estimate.
-All figures are Yosys synthesis with `gf180mcu_as_sc_mcu7t3v3` TT/25°C/3.3 V.
+Four rounds of RTL area reduction have been applied since the original estimate.
+All figures are Yosys synthesis with `gf180mcu_as_sc_mcu7t3v3` TT/25°C/3.3 V
+(standalone per-module runs; flat synthesis as used by LibreLane).
 
-| Block | Original | After decimator | After sc/wgen | Change vs original |
-|---|---|---|---|---|
-| `sd_decimator ×4` | 759 k | — | — | — |
-| `sd_decimator_cic_only ×4` | — | **300 k** | **300 k** | **−459 k** |
-| `sc_detector` | 561 k | 305 k (resyn) | **193 k** | **−368 k** |
-| `weight_gen` | 298 k | 184 k (resyn) | **120 k** | **−178 k** |
-| `dc_removal` | 90 k | 50 k | 50 k | −40 k |
-| `frontend_buf_ctrl` | 48 k | 30 k | 30 k | −18 k |
-| `training_acc` | 211 k | 119 k | 119 k | −92 k |
-| `mrc_combiner` | 195 k | 121 k | 121 k | −74 k |
-| `energy_meas` | — | 98 k | 98 k | — |
-| `noise_floor_est` | — | 83 k | 83 k | — |
-| `sd_remod` | 35 k | 29 k | 29 k | −6 k |
-| **DSP stdcell total** | **~2,197 k** | **~1,319 k** | **~1,143 k** | **−1,054 k** |
+#### Stdcell blocks
 
-Changes made 2026-05-31:
+| Block | Original | Round 1 (decimator) | Round 2 (sc/wgen) | Round 3 (energy/noise/cpu) | Current | vs original |
+|---|---|---|---|---|---|---|
+| `sd_decimator ×4` | 759 k | — | — | — | — | — |
+| `sd_decimator_cic_only ×4` | — | 300 k | 300 k | 300 k | **300 k** | **−459 k** |
+| `picorv32` core | — | — | 286 k | 286 k | **286 k** | — |
+| `sc_detector` | 561 k | 305 k | 193 k | 193 k | **164 k** | **−397 k** |
+| `mrc_combiner` | 195 k | 121 k | 121 k | 121 k | **121 k** | −74 k |
+| `weight_gen` | 298 k | 184 k | 120 k | 120 k | **120 k** | **−178 k** |
+| `training_acc` | 211 k | 119 k | 119 k | 119 k | **119 k** | −92 k |
+| `reg_bank` | — | — | 103 k | 103 k | **103 k** | — |
+| `energy_meas` | — | 98 k | 98 k | **75 k** | **75 k** | **−23 k** |
+| `picorv32_pcpi_mul/div` | — | — | 69 k | 69 k | **69 k** | — |
+| `dc_removal` | 90 k | 50 k | 50 k | 50 k | **50 k** | −40 k |
+| `noise_floor_est` | — | 83 k | 83 k | **34 k** | **34 k** | **−49 k** |
+| `packet_ctrl_fsm` | — | — | 33 k | 33 k | **33 k** | — |
+| `frontend_buf_ctrl` | 48 k | 30 k | 30 k | 30 k | **30 k** | −18 k |
+| `sd_remod` | 35 k | 29 k | 29 k | 29 k | **29 k** | −6 k |
+| `picorv32_wrap` glue | — | — | 18 k | **22 k** | **22 k** | +4 k (2-SRAM FSM) |
+| `spi_slave` | — | — | 17 k | 17 k | **17 k** | — |
+| `spi_master` | — | — | 10 k | 10 k | **10 k** | — |
+| `irq_ctrl` + `ahb_lite_bus` | — | — | 5 k | 5 k | **5 k** | — |
+| **Stdcell total** | **~2,197 k** | **~1,319 k** | **~1,687 k** ¹ | **~1,616 k** | **~1,587 k** | |
+
+¹ Round 2 total includes CPU and non-DSP blocks not counted in Round 1.
+
+#### SRAM macros
+
+| Macro | Count | Each (µm²) | Total |
+|---|---|---|---|
+| `gf180mcu_ocd_ip_sram__sram1024x8m8wm1` (CPU) | 2 | 155,527 | **311 k** |
+| `gf180mcu_fd_ip_sram__sram512x8m8wm1` (frontend buf) | 1 | 209,357 | **209 k** |
+| **SRAM total** | | | **520 k** |
+
+#### Grand total
+
+| Category | µm² |
+|---|---|
+| Stdcell | ~1,587 k |
+| SRAM macros | ~520 k |
+| **Total logic** | **~2,107 k ≈ 2.11 mm²** |
+| **Realistic die at FP_CORE_UTIL=40** | **~3.8 mm²** (confirmed by job 1127 floorplan) |
+
+#### Changes made in session 3 (2026-06-01):
+- `sc_detector`: NR=2 → NR=1 (single-channel preamble lock), 32→24-bit accumulators, 17→13-bit eval multiplier. 193 k → 164 k (−29 k). SGE job 1138.
+
+#### Changes made in session 2 (2026-05-31):
+- `energy_meas`: 8 parallel squarers → 1 shared TDM squarer, 9-step FSM. 98 k → 75 k (−23 k). SGE job 1120.
+- `noise_floor_est`: 4 parallel EMA channels → serialised 1-per-cycle, single 25-bit arithmetic path. 83 k → 34 k (−49 k). SGE job 1120.
+- `picorv32_wrap`: 4× OCD 1024×8 → 2× OCD 1024×8 with 2-phase 2 kB access scheme. SRAM saving −310 k. SGE job 1112.
+- `mimo_rx_top`: connected `rx_gain_shadow_2/3` ports to `reg_bank` (previously floating).
+
+#### Changes made in session 1 (2026-05-31):
 - `sd_decimator_cic_only ×4`: CIC N=3 only, no FIR, zero multipliers. SGE job 1104.
-- `sc_detector`: 16 parallel combinational 8×8 multipliers → 1 shared TDM multiplier.
-  16-step FSM, 16 cycles per sample (budget: 256 cycles at R=256). SGE job 1108.
-- `weight_gen`: 4 simultaneous 16×8 calibration wires → 1 serialised multiplier,
-  5 cycles per antenna × 4 antennas = 20-cycle ST_CALIBRATE (was 5). SGE job 1108.
+- `sc_detector`: 16 parallel 8×8 multipliers → 1 shared TDM multiplier. SGE job 1108.
+- `weight_gen`: 4 simultaneous 16×8 calibration wires → 1 serialised multiplier. SGE job 1108.
 
-Decimator change rationale: `planning/cic-only-decimator-findings.md`
-sc_detector / weight_gen: see comments at top of each RTL file.
-
-Important interpretation:
-
-- this is still a standalone-block sum, so it should be treated as an upper-bound style estimate, not the exact integrated-top DSP area
-- the current top does **not** instantiate `nr_corr`, `nr_inner`, `nr_outer`, `calib`, or `mag2`
-- the earlier much larger standalone DSP estimate was too pessimistic because the `sc_detector` `final/metrics.json` area was inconsistent with the implementation logs
-- even with the corrected DSP estimate, the current integrated top picture still points to the CPU subsystem as the dominant area problem
+#### Reliability notes:
+- All stdcell figures from standalone per-module flat synthesis (same flow as LibreLane). Reliable to ±5–10%.
+- SRAM areas from LEF physical dimensions — exact.
+- Die area of 3.8 mm² from OpenROAD floorplan measurement (job 1127) — confirmed.
+- CPU holds timing at 16 MHz (3.3 V, SS/125°C/3.0 V, +2.37 ns slack). 32 MHz fails; CPU clock domain fix needed before tapeout.
+- OCD SRAM `.lib` is uncharacterised (byte-copy of FD timing) — STA against OCD macros is not silicon-predictive.
 
 ### Still intentionally not solved in this pass
 
