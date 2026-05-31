@@ -61,11 +61,8 @@ module weight_gen (
 
     function signed [15:0] sat16;
         input signed [31:0] v;
-        begin
-            if (v > 32'sd32767)       sat16 = 16'sd32767;
-            else if (v < -32'sd32768) sat16 = -16'sd32768;
-            else                       sat16 = v[15:0];
-        end
+        sat16 = (v > 32'sd32767)  ? 16'sd32767  :
+                (v < -32'sd32768) ? -16'sd32768 : v[15:0];
     endfunction
 
     reg [4:0] mrc_norm_shift;
