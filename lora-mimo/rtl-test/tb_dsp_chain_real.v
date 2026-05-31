@@ -256,22 +256,18 @@ module tb_dsp_chain_real;
     // Stage 5: Schmidl-Cox preamble detector
     // -----------------------------------------------------------------------
     wire [31:0] timing_ref;
-    wire signed [31:0] c_i0, c_q0, c_i1, c_q1;
+    wire signed [31:0] c_i0, c_q0;
 
     sc_detector u_sc (
         .clk(clk),           .rst_n(rst_n),
         .iq_valid(dcr_valid),
-        .cur_i0(cur_i0), .cur_i1(cur_i1),
-        .cur_q0(cur_q0), .cur_q1(cur_q1),
-        .del_i0(del_i0), .del_i1(del_i1),
-        .del_q0(del_q0), .del_q1(del_q1),
         .delayed_valid(delayed_valid),
         .sf(4'd7),
         .sc_thr(16'd32),    // realistic threshold for real capture
         .sc_hits_req(2'd1),
         .sc_lock(sc_lock),
         .timing_ref(timing_ref),
-        .c_i0(c_i0), .c_q0(c_q0), .c_i1(c_i1), .c_q1(c_q1),
+        .c_i0(c_i0), .c_q0(c_q0),
         .sc_stat(), .sc_hit_dbg(), .sc_hit_count_dbg(),
         .sc_first_hit_dbg(), .sc_lock_sample_dbg()
     );
