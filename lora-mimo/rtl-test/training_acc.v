@@ -1,9 +1,10 @@
 // training_acc.v
 // Training accumulator: cross-correlates each branch against a reference branch
 // over 8 LoRa symbols after preamble detection.
-// TDM: 4 shared 8x8 multipliers process antennas 0-3 sequentially (1 per cycle),
-// then E_ref on cycle 5. Total compute latency: 3 cycles per iq_valid sample.
-// At 16 MHz (62.5 ns) an 8x8 signed multiply (~3 ns) fits in one registered cycle.
+// TDM: 2 shared 8x8 multipliers, 2 sub-steps per antenna (sub0→zi, sub1→zq),
+// then 1 cycle for E_ref. Total active cycles per sample: 9 + 2 drain = 11.
+// Budget: iq_valid arrives every ≥20 cycles — fits comfortably.
+// Area change: 4 muls → 2 muls (~−17k µm²).
 // GF180MCU, 3.3V, 16 MHz clock domain
 
 module signed_mul8_pipe (
@@ -67,6 +68,9 @@ module training_acc (
 
     // TDM state: 0=idle, 1-4=antenna 0-3, 5=E_ref
     reg [2:0] tdm_state;
+    // sub_step: 0=zi sub-cycle (I×ref_i, Q×ref_q), 1=zq sub-cycle (Q×ref_i, I×ref_q)
+    // Only states 1-4 use sub_step=1; state 5 (E_ref) uses sub_step=0 only.
+    reg       sub_step;
 
     // Latched per-sample inputs (captured when iq_valid triggers TDM)
     reg signed [7:0] raw_ir [0:3];
@@ -74,31 +78,34 @@ module training_acc (
     reg signed [7:0] ref_ir, ref_qr;
     reg              last_samp;  // this sample was acc_end
 
-    // Pipeline operand selection so the TDM state decode is not in the multiplier path.
-    reg signed [7:0] op_i_q, op_q_q, op_ref_i_q, op_ref_q_q;
+    // Pipeline operand registers — state decode kept out of the multiplier path.
+    reg signed [7:0] op_a_q, op_b_q, op_c_q, op_d_q;
     reg [2:0]        op_state_q;
+    reg              op_sub_q;   // sub_step tag for this op
     reg              op_valid_q;
     reg              op_last_q;
 
-    // 4 shared 8x8 multipliers, driven only by registered operands.
-    wire signed [15:0] mul_a, mul_b, mul_c, mul_d;
-    signed_mul8_pipe u_mul_a (.clk(clk), .a(op_i_q), .b(op_ref_i_q), .p(mul_a));
-    signed_mul8_pipe u_mul_b (.clk(clk), .a(op_q_q), .b(op_ref_q_q), .p(mul_b));
-    signed_mul8_pipe u_mul_c (.clk(clk), .a(op_q_q), .b(op_ref_i_q), .p(mul_c));
-    signed_mul8_pipe u_mul_d (.clk(clk), .a(op_i_q), .b(op_ref_q_q), .p(mul_d));
+    // 2 shared 8x8 multipliers.
+    // sub_step=0: a=I×ref_i (→zi partial), b=Q×ref_q (→zi partial)
+    // sub_step=1: a=Q×ref_i (→zq partial), b=I×ref_q (→zq partial)
+    // state 5:    a=ref_i², b=ref_q²
+    wire signed [15:0] mul_0, mul_1;
+    signed_mul8_pipe u_mul_0 (.clk(clk), .a(op_a_q), .b(op_b_q), .p(mul_0));
+    signed_mul8_pipe u_mul_1 (.clk(clk), .a(op_c_q), .b(op_d_q), .p(mul_1));
 
-    wire signed [15:0] tdm_zi = mul_a + mul_b;   // prod_zi for current antenna
-    wire signed [15:0] tdm_zq = mul_c - mul_d;   // prod_zq for current antenna
-    // In state 5: tdm_zi = ref_i^2 + ref_q^2 = E_ref contribution
+    // Combinatorial sum/diff of multiplier outputs.
+    // sum_p = zi contribution (sub_step=0) or E_ref contribution (state 5)
+    // diff_p = zq contribution (sub_step=1)
+    wire signed [15:0] sum_p  = mul_0 + mul_1;
+    wire signed [15:0] diff_p = mul_0 - mul_1;
 
     reg [1:0] mul_valid_pipe;
     reg [2:0] mul_state_0, mul_state_1;
+    reg       mul_sub_0, mul_sub_1;
     reg       mul_last_0, mul_last_1;
 
-    reg signed [15:0] prod_zi_q, prod_zq_q;
-    reg [2:0]         prod_state_q;
-    reg               prod_valid_q;
-    reg               prod_last_q;
+    // zi intermediate: latched when sub_step=0 product lands; consumed at sub_step=1.
+    reg signed [15:0] zi_latch;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -112,17 +119,18 @@ module training_acc (
             acc_start     <= 32'd0;
             acc_end       <= 32'd0;
             tdm_state     <= 3'd0;
+            sub_step      <= 1'b0;
             last_samp     <= 1'b0;
             raw_ir[0] <= 8'sd0; raw_ir[1] <= 8'sd0; raw_ir[2] <= 8'sd0; raw_ir[3] <= 8'sd0;
             raw_qr[0] <= 8'sd0; raw_qr[1] <= 8'sd0; raw_qr[2] <= 8'sd0; raw_qr[3] <= 8'sd0;
             ref_ir <= 8'sd0; ref_qr <= 8'sd0;
-            op_i_q <= 8'sd0; op_q_q <= 8'sd0; op_ref_i_q <= 8'sd0; op_ref_q_q <= 8'sd0;
-            op_state_q <= 3'd0; op_valid_q <= 1'b0; op_last_q <= 1'b0;
+            op_a_q <= 8'sd0; op_b_q <= 8'sd0; op_c_q <= 8'sd0; op_d_q <= 8'sd0;
+            op_state_q <= 3'd0; op_sub_q <= 1'b0; op_valid_q <= 1'b0; op_last_q <= 1'b0;
             mul_valid_pipe <= 2'd0;
             mul_state_0 <= 3'd0; mul_state_1 <= 3'd0;
+            mul_sub_0 <= 1'b0; mul_sub_1 <= 1'b0;
             mul_last_0 <= 1'b0; mul_last_1 <= 1'b0;
-            prod_zi_q <= 16'sd0; prod_zq_q <= 16'sd0;
-            prod_state_q <= 3'd0; prod_valid_q <= 1'b0; prod_last_q <= 1'b0;
+            zi_latch <= 16'sd0;
             Z_i0 <= 32'sd0; Z_q0 <= 32'sd0;
             Z_i1 <= 32'sd0; Z_q1 <= 32'sd0;
             Z_i2 <= 32'sd0; Z_q2 <= 32'sd0;
@@ -170,13 +178,13 @@ module training_acc (
             if (!sc_lock && !noise_mode_r) begin
                 armed     <= 1'b0;
                 tdm_state <= 3'd0;
+                sub_step  <= 1'b0;
             end
 
             // Trigger TDM on iq_valid within window (only when idle)
             if (armed && iq_valid && tdm_state == 3'd0 &&
                 sample_count >= acc_start && sample_count <= acc_end &&
                 !training_done && !noise_ready) begin
-                // Latch raw samples; in noise mode force ref to ant0
                 raw_ir[0] <= raw_i0; raw_qr[0] <= raw_q0;
                 raw_ir[1] <= raw_i1; raw_qr[1] <= raw_q1;
                 raw_ir[2] <= raw_i2; raw_qr[2] <= raw_q2;
@@ -187,80 +195,98 @@ module training_acc (
                 if (n_acc < 10'd1023)
                     n_acc <= n_acc + 10'd1;
                 tdm_state <= 3'd1;
+                sub_step  <= 1'b0;
             end
 
-            // Delay state metadata to match the pipelined multiplier outputs.
+            // Shift state metadata through the 2-cycle multiplier pipeline.
             mul_valid_pipe <= {mul_valid_pipe[0], op_valid_q};
-            mul_state_0 <= op_state_q;
-            mul_state_1 <= mul_state_0;
-            mul_last_0 <= op_last_q;
-            mul_last_1 <= mul_last_0;
+            mul_state_0 <= op_state_q;  mul_state_1 <= mul_state_0;
+            mul_sub_0   <= op_sub_q;    mul_sub_1   <= mul_sub_0;
+            mul_last_0  <= op_last_q;   mul_last_1  <= mul_last_0;
 
-            // Accumulate the previously registered product.
-            if (prod_valid_q) begin
-                case (prod_state_q)
-                    3'd1: begin
-                        Z_i0 <= Z_i0 + {{16{prod_zi_q[15]}}, prod_zi_q};
-                        Z_q0 <= Z_q0 + {{16{prod_zq_q[15]}}, prod_zq_q};
-                    end
-                    3'd2: begin
-                        Z_i1 <= Z_i1 + {{16{prod_zi_q[15]}}, prod_zi_q};
-                        Z_q1 <= Z_q1 + {{16{prod_zq_q[15]}}, prod_zq_q};
-                    end
-                    3'd3: begin
-                        Z_i2 <= Z_i2 + {{16{prod_zi_q[15]}}, prod_zi_q};
-                        Z_q2 <= Z_q2 + {{16{prod_zq_q[15]}}, prod_zq_q};
-                    end
-                    3'd4: begin
-                        Z_i3 <= Z_i3 + {{16{prod_zi_q[15]}}, prod_zi_q};
-                        Z_q3 <= Z_q3 + {{16{prod_zq_q[15]}}, prod_zq_q};
-                    end
-                    3'd5: begin
-                        E_ref <= E_ref + {{48{prod_zi_q[15]}}, prod_zi_q};
-                        if (prod_last_q) begin
-                            if (noise_mode_r) begin
-                                noise_ready  <= 1'b1;
-                                noise_done   <= 1'b1;
-                                armed        <= 1'b0;
-                                noise_mode_r <= 1'b0;
-                            end else begin
-                                training_done <= 1'b1;
+            // Accumulate when products land (mul_valid_pipe[1]).
+            if (mul_valid_pipe[1]) begin
+                if (mul_state_1 <= 3'd4) begin
+                    if (mul_sub_1 == 1'b0) begin
+                        // zi = I×ref_i + Q×ref_q — latch for use at sub_step 1
+                        zi_latch <= sum_p;
+                    end else begin
+                        // zq = Q×ref_i − I×ref_q — accumulate both zi and zq
+                        case (mul_state_1)
+                            3'd1: begin
+                                Z_i0 <= Z_i0 + {{16{zi_latch[15]}}, zi_latch};
+                                Z_q0 <= Z_q0 + {{16{diff_p[15]}},   diff_p};
                             end
+                            3'd2: begin
+                                Z_i1 <= Z_i1 + {{16{zi_latch[15]}}, zi_latch};
+                                Z_q1 <= Z_q1 + {{16{diff_p[15]}},   diff_p};
+                            end
+                            3'd3: begin
+                                Z_i2 <= Z_i2 + {{16{zi_latch[15]}}, zi_latch};
+                                Z_q2 <= Z_q2 + {{16{diff_p[15]}},   diff_p};
+                            end
+                            default: begin
+                                Z_i3 <= Z_i3 + {{16{zi_latch[15]}}, zi_latch};
+                                Z_q3 <= Z_q3 + {{16{diff_p[15]}},   diff_p};
+                            end
+                        endcase
+                    end
+                end else begin
+                    // state 5: E_ref = ref_i² + ref_q²
+                    E_ref <= E_ref + {{48{sum_p[15]}}, sum_p};
+                    if (mul_last_1) begin
+                        if (noise_mode_r) begin
+                            noise_ready  <= 1'b1;
+                            noise_done   <= 1'b1;
+                            armed        <= 1'b0;
+                            noise_mode_r <= 1'b0;
+                        end else begin
+                            training_done <= 1'b1;
                         end
                     end
-                    default: ;
-                endcase
+                end
             end
 
-            // Register product sums from the multiplier outputs before accumulation.
-            prod_valid_q <= mul_valid_pipe[1];
-            if (mul_valid_pipe[1]) begin
-                prod_zi_q    <= tdm_zi;
-                prod_zq_q    <= tdm_zq;
-                prod_state_q <= mul_state_1;
-                prod_last_q  <= mul_last_1;
-            end
-
-            // Select operands for the next product; multiplication happens in the helper pipeline.
+            // Select operands and advance TDM state.
             op_valid_q <= 1'b0;
             if ((sc_lock || noise_mode_r) && tdm_state != 3'd0) begin
-                case (tdm_state)
-                    3'd1: begin op_i_q <= raw_ir[0]; op_q_q <= raw_qr[0]; end
-                    3'd2: begin op_i_q <= raw_ir[1]; op_q_q <= raw_qr[1]; end
-                    3'd3: begin op_i_q <= raw_ir[2]; op_q_q <= raw_qr[2]; end
-                    3'd4: begin op_i_q <= raw_ir[3]; op_q_q <= raw_qr[3]; end
-                    default: begin op_i_q <= ref_ir; op_q_q <= ref_qr; end
-                endcase
-                op_ref_i_q <= ref_ir;
-                op_ref_q_q <= ref_qr;
                 op_state_q <= tdm_state;
+                op_sub_q   <= sub_step;
                 op_last_q  <= last_samp;
                 op_valid_q <= 1'b1;
 
-                if (tdm_state == 3'd5)
+                if (tdm_state <= 3'd4) begin
+                    // Antenna states: 2 sub-steps.
+                    // sub_step=0: op_a=I×ref_i, op_c=Q×ref_q
+                    // sub_step=1: op_a=Q×ref_i, op_c=I×ref_q
+                    if (sub_step == 1'b0) begin
+                        case (tdm_state)
+                            3'd1: begin op_a_q<=raw_ir[0]; op_c_q<=raw_qr[0]; end
+                            3'd2: begin op_a_q<=raw_ir[1]; op_c_q<=raw_qr[1]; end
+                            3'd3: begin op_a_q<=raw_ir[2]; op_c_q<=raw_qr[2]; end
+                            default: begin op_a_q<=raw_ir[3]; op_c_q<=raw_qr[3]; end
+                        endcase
+                        op_b_q   <= ref_ir;
+                        op_d_q   <= ref_qr;
+                        sub_step <= 1'b1;
+                    end else begin
+                        case (tdm_state)
+                            3'd1: begin op_a_q<=raw_qr[0]; op_c_q<=raw_ir[0]; end
+                            3'd2: begin op_a_q<=raw_qr[1]; op_c_q<=raw_ir[1]; end
+                            3'd3: begin op_a_q<=raw_qr[2]; op_c_q<=raw_ir[2]; end
+                            default: begin op_a_q<=raw_qr[3]; op_c_q<=raw_ir[3]; end
+                        endcase
+                        op_b_q    <= ref_ir;
+                        op_d_q    <= ref_qr;
+                        sub_step  <= 1'b0;
+                        tdm_state <= (tdm_state == 3'd4) ? 3'd5 : tdm_state + 3'd1;
+                    end
+                end else begin
+                    // State 5 (E_ref): single sub-step, ref_i² + ref_q²
+                    op_a_q    <= ref_ir;  op_b_q <= ref_ir;
+                    op_c_q    <= ref_qr;  op_d_q <= ref_qr;
                     tdm_state <= 3'd0;
-                else
-                    tdm_state <= tdm_state + 3'd1;
+                end
             end
         end
     end
