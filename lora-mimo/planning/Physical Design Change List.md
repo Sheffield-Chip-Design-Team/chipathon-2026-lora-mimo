@@ -29,6 +29,231 @@ Because of that, a top-level PD run today would still be useful mainly as a macr
 - updated `rtl-test/ol_picorv32_wrap/config.json` to include the CPU SRAM blackbox plus LEF/LIB views
 - updated `rtl-test/ol_mimo_rx_top/config.json` to include both SRAM blackboxes plus LEF/LIB views
 - parse-checked `picorv32_wrap` and `mimo_rx_top` successfully in the `chipathon26` container with Yosys
+- completed a clean `16 MHz` hard-macro `ol_picorv32_wrap` PD run, proving the wrapper plus 4 CPU SRAM macros can reach GDS with the current `RV32IM` configuration
+- completed a matching `RV32I` wrapper PD comparison run to quantify the area impact of removing hardware MUL/DIV
+- completed a matching `RV32IM` dual-port versus single-port regfile wrapper PD comparison run
+
+### Recorded decision data: CPU option area tradeoff
+
+The current wrapper comparison gives a useful first decision point for CPU-area reduction:
+
+| Wrapper option | Die area (mm^2) | Instance area (um^2) | Stdcell area (um^2) | Hold result | Decision note |
+| --- | --- | --- | --- | --- | --- |
+| `RV32IM` dual-port | `2.94` | `2,798,570` | `515,628` | Clean | Known-good wrapper baseline |
+| `RV32I` dual-port | `2.74` | `2,603,240` | `438,195` | `-0.485 ns`, `18` hold violations | Stronger CPU-core area reduction, but not signoff-clean |
+| `RV32IM` single-port | `2.86` | `2,721,480` | `490,596` | `-0.474 ns`, `1` hold violation | Smaller regfile-driven area reduction, but still not signoff-clean |
+| `RV32IM` single-port + no IRQ qregs/counters | `~2.78–2.79` (est.) | `~2,649,000–2,657,000` (est.) | not finalized | run failed before signoff | Low-pain bundle moves area a bit further, but only modestly |
+
+Interpretation:
+
+- removing MUL/DIV reduces wrapper die area by about `0.20 mm^2` and is the stronger of the CPU-only levers measured cleanly so far
+- changing dual-port to single-port regfile reduces wrapper die area by about `0.077 mm^2`, so it is a weaker lever
+- the additional low-pain bundle (`ENABLE_IRQ_QREGS=0`, `ENABLE_COUNTERS=0`, `ENABLE_COUNTERS64=0`) appears to save another `~0.07–0.08 mm^2` of die area on top of single-port `RV32IM`, based on synthesis-area extrapolation only
+- most of these gains are stdcell logic, not SRAM, so the fixed 4-macro CPU memory cost remains
+- none of these CPU-only tweaks is large enough by itself to drive the full top from `~3 mm^2+` toward `2 mm^2`
+- every non-baseline variant tested so far has introduced either hold regressions or routing-access failures and would need follow-up repair before being treated as a clean replacement
+- a bundled low-pain small-core experiment (`ENABLE_IRQ_QREGS=0`, `ENABLE_COUNTERS=0`, `ENABLE_COUNTERS64=0`) on top of `RV32IM` single-port synthesized successfully but failed in detailed routing before final metrics; synthesis area dropped from `1,190,846` to `1,159,165 um^2`, which extrapolates to roughly `~2.65 mm^2` final instance area and `~2.78–2.79 mm^2` die area if routing had completed
+
+### Recorded decision data: SERV replacement trial
+
+A first `SERV`-based control-plane wrapper was implemented as `servile_wrap_4macro` using:
+
+- `servile`
+- `servile_rf_mem_if`
+- 4 × `gf180mcu_ocd_ip_sram__sram1024x8m8wm1`
+
+This gives a like-for-like SRAM-macro count against the current PicoRV32 wrapper while testing how much logic-area reduction a serial control CPU can recover.
+
+| Wrapper option | Die area (mm^2) | Instance area (um^2) | Hold result | Other result | Decision note |
+| --- | --- | --- | --- | --- | --- |
+| `SERV` baseline, original macro placement | `1.94` | `1,814,430` | `-2.226 ns`, `9` hold violations | DRC `0`, antenna `0`, GDS produced | Strong area result, but not signoff-clean |
+| `SERV` `38/45` tight-center SRAM cluster | not finalized | not finalized | failed before timing summary | `DRT-1231` clock-buffer access failure | Pulling SRAMs closer vertically hurt routability |
+| `SERV` `38/45` open-center SRAM spread | `1.79` | `1,676,110` | `-2.625 ns`, `25` hold violations | antenna `9`, GDS produced | Better area, but materially worse hold and antenna |
+
+Interpretation:
+
+- `SERV` is a serious CPU replacement candidate from an area perspective even with the same 4 SRAM macros
+- compared to the clean `RV32IM` dual-port PicoRV32 wrapper baseline, the first `SERV` baseline cut die area from about `2.94 mm^2` to `1.94 mm^2`
+- compared to the `RV32IM` single-port wrapper, the first `SERV` baseline still cut die area from about `2.86 mm^2` to `1.94 mm^2`
+- the functional logic area is genuinely tiny; most remaining area is SRAM macros plus physical overhead such as fill/tap/endcap
+- macro movement does change the tradeoff, but the first two experiments show the direction clearly:
+- `tight-center` made clock-buffer access worse and failed in detailed routing
+- `open-center` recovered more area, but made hold and antenna significantly worse
+- the current best `SERV` point is therefore still the original loose baseline floorplan, not the tighter placement variants
+- the next meaningful `SERV` cleanup is likely SDC repair first, then gentler floorplan tightening, rather than more aggressive macro movement
+
+### Overnight PicoRV32 macro-topology sweep queued for review
+
+To compare macro topology cleanly without changing RTL or density, an overnight sweep was queued on the clean `RV32IM` dual-port `picorv32_wrap` baseline. All queued runs keep:
+
+- the same wrapper RTL
+- the same `16 MHz` timing target
+- the same `FP_CORE_UTIL 35` and `PL_TARGET_DENSITY_PCT 42`
+- only SRAM macro placement changes
+
+Reference points before the sweep:
+
+- clean baseline: original `2x2` macro placement, successful GDS run
+- failed comparison: `1x4` bottom-row macro wall, run `969`, which reached post-antenna reroute and then failed on `DRT-0073` clock-buffer access
+
+Queued topology jobs:
+
+- `970` `prv-2x2-low-open`
+- `971` `prv-2x2-staggered`
+- `972` `prv-t-shape`
+- `973` `prv-l-shape`
+- `974` `prv-top-row`
+- `975` `prv-3plus1`
+- `976` `prv-edge-cols`
+- `977` `prv-2x2-top-open`
+
+Tomorrow's review criteria:
+
+- which topologies complete versus fail in detailed routing
+- whether any topology clears the recurrent post-antenna `clkbuf_*` access failure
+- die area and instance area for any completed runs
+- hold and antenna behavior for any completed runs
+- whether a topology improves on the clean `2x2` baseline enough to justify replacing it
+
+Working hypothesis going into the review:
+
+- a very wide macro wall is probably harmful, based on the failed `1x4` bottom-row test
+- the most promising alternatives are likely `2x2`-derived placements that open routing channels or shift blockage away from the clocked logic region
+- the sweep should be treated as a floorplan/topology comparison, not a CPU architecture comparison
+
+### Overnight PicoRV32 macro-topology sweep result
+
+The overnight sweep completed for jobs `970` through `977`. The result is decisive enough to close this branch of exploration:
+
+- seven of the eight topology variants failed in detailed routing with clock-buffer or delay-buffer access errors
+- the only topology that completed the full flow was `974` `prv-top-row`
+- `prv-top-row` still failed deferred signoff, with hold violations at `nom_tt_025C_3v30`, antenna violations, and max-cap violations
+
+Topology outcomes:
+
+- `970` `2x2-low-open`: failed on `clkbuf_3_0_0`, `clkbuf_3_2_0`, `clkbuf_3_6_0` access
+- `971` `2x2-staggered`: failed on `clkbuf_2_1_0` access
+- `972` `t-shape`: failed on `clkbuf_2_2_0` and `clkbuf_2_0_0` access
+- `973` `l-shape`: failed on `delaybuf_0_clk_32m` access
+- `974` `top-row`: completed, but not clean
+- `975` `3plus1`: failed on `clkbuf_3_0_0` and `clkbuf_3_5_0` access
+- `976` `edge-cols`: failed on `clkbuf_3_7_0` access
+- `977` `2x2-top-open`: failed on `clkbuf_0`, `clkbuf_2_0_0`, `clkbuf_2_1_0` access
+
+Completed `top-row` metrics:
+
+- die bbox: `1704.89 x 1722.81 um`
+- instance area: `2,806,450 um^2`
+- setup WNS: `0`
+- hold WNS: `-0.720 ns`
+- antenna violations: `9`
+- max-cap violations: `1`
+
+Interpretation:
+
+- simple macro-topology changes did not produce a better wrapper floorplan than the original clean `2x2` baseline
+- wide macro walls and asymmetric placements mostly made the recurrent clock-access problem worse
+- the original successful `2x2` wrapper should remain the reference implementation point for now
+- further wrapper work is unlikely to benefit from broad topology sweeps and should instead focus on either small local adjustments around the baseline or on testing the CPU in a larger integrated block
+
+### 2026-05-28 PD-knob area sweep: PicoRV32 wrapper + mimo_rx_top
+
+A second pass focused on synthesis/PD knobs rather than macro topology. The
+goal was area minimisation at fixed 16 MHz with both blocks. Detailed
+write-up in [PicoRV32 Integration.md](blocks/PicoRV32%20Integration.md)
+"Synthesis/PD area-knob sweep" section.
+
+**PicoRV32 wrapper results (baseline 2×2 macro placement):**
+
+| Variant | SYNTH | util/dens | halo | Die (mm²) | SS slack (ns) | Status |
+|---|---|---|---|---|---|---|
+| baseline | DELAY 0 | 35/42 | 10/5 | 3.06 | +22.78 | clean reference |
+| `area_t1` (Tier 1) | **AREA 0** | **50/60** | 10/5 | **2.02** | +0.95 | clean — **−31% die** |
+| `area_t12b` (Tier 1+2) | AREA 0 | 50/60 | 10/5 | 2.02 | +0.95 | bit-identical to t1 — Tier 2 inactive |
+| `area_halo` (t1 + halo shrink) | AREA 0 | 50/60 | **5/3** | 2.02 | **+5.22** | same area, **+4.3 ns slack recovered** |
+| `area_mpw` (push, drop SS) | AREA 0 | 60/70 | 10/5 | — | — | fail DRT-0073 — density wall |
+
+**Density wall finding:** `FP_CORE_UTIL ≥ 60` or `PL_TARGET_DENSITY_PCT ≥ 70` reliably hits `DRT-0073/1231` on clock-buffer pin access points, regardless of CTS buffer cell choice or whether SS corner is in the signoff set. This is the practical area floor for picorv32 + GF180MCU `mcu7t5v0` + the current PDN configuration.
+
+**Critical path observation:** `SYNTH_STRATEGY: AREA 0` restructures the worst combinational path from "10 levels of fat compound gates with high-fanout slew-repair chain" (baseline DELAY 0) to "22+ levels of plain 4-input cells (`and4`/`nand4`/`nor4`) with no slew-repair buffers" (AREA 0). Neither path touches the SRAM macros — both runs are CPU-internal flop→flop. Macro placement does not bound fmax at 16 MHz.
+
+**mimo_rx_top result (job 1003, `config_area_t12c`):**
+
+Backed-off PD knobs (`util 28 / density 36`, FP_ASPECT 1, AREA 0, halos and CTS as in `config_trial_top_ctsabc.json`) on the full mimo top-level produced the **first comprehensive top-level area number** with closed timing across all corners:
+
+| Metric | Value |
+|---|---|
+| DIEAREA | `5842.93 × 5878.77 µm` (≈ 1:1) |
+| Die area | **8.59 mm²** |
+| Instances | 318,423 (5 macros: 4× OCD picorv32 RAM + 1× FD frontend buffer) |
+| Util achieved | 0.32 (target 0.28) |
+| WS at TT 25 °C 3v30 | **+39.35 ns** |
+| WS at SS 125 °C 3v00 | **+14.58 ns** |
+| WS at FF −40 °C 3v60 | +47.19 ns |
+| Hold WS | +0.17 ns |
+| TritonRoute DRC | 0 |
+| Magic GDS DRC | **38 illegal-overlap errors → flow flagged FAILED** |
+
+Timing closes comfortably at every corner. Routing is clean. The deferred-error failure is GDS-level Magic DRC (illegal overlap, likely PDN strap vs macro halo at the smaller halo settings inherited from the trial config) — fixable by bumping `FP_MACRO_HORIZONTAL_HALO`/`FP_MACRO_VERTICAL_HALO` or adjusting `PDN_HORIZONTAL_HALO`/`PDN_VERTICAL_HALO`. A follow-up `config_area_t12d.json` with halos 12/15 should resolve it.
+
+**Top-level area context:** 8.59 mm² for the full mimo includes the entire SRAM stack (4× 0.155 mm² OCD + 1× 0.21 mm² FD = ~0.83 mm² memory) plus the full DSP datapath (sd_decimator, dc_removal, weight_gen, sc_detector, packet_ctrl_fsm, training_acc, mrc_combiner, etc.), the picorv32 wrapper, AHB-Lite bus, register bank, SPI master/slave, IRQ controller, and frontend buffer controller. Compared to the previously documented `top-row` PicoRV32-only result (~2.94 mm²), the additional DSP + glue logic adds ~5.6 mm² of std-cell area at util 0.32.
+
+**Failed variants (for the record):**
+
+| Job | Variant | Failure | Class |
+|---|---|---|---|
+| 989 | `b23_flipped` (b2/b3 FS pins up) | DRT-1231 clkbuf_12 | FS orientation breaks routing |
+| 992 | `b23_flipped` + CTS fix | DRT-1231 clkbuf_12 | same |
+| 993 | `row1x4` (4× macros bottom row) | clean | viable layout, +19.10 ns SS |
+| 994 | `cpu_middle` (b0/b1 N up, b2/b3 FS down) | DRT-0073 clkbuf_12+16 | FS orientation breaks routing |
+| 996 | `area_t12` (smaller CTS buffers) | DRT-0073 clkbuf_4 | smaller CTS bufs fail at density 60 |
+| 997 | `mimo_area_t12` (baseline config, no macro cfg) | PDN-0235 macros unplaced | baseline mimo lacks macro placement |
+| 999 | `mimo_area_t12b` (util 35/45 + CTS fix) | DRT-1231 clkbuf_12 IQ_CLK_regs | mimo density wall on 7k-fanout IQ_CLK |
+| 1000 | `col4x1` (W orientation, macros left) | DRT-1231 clkbuf_regs_0_clk_32m/Z | W orientation breaks routing |
+| 1001 | `area_mpw` (util 60/density 70, drop SS) | DRT-0073 clkbuf_12 | density wall |
+| 1002 | `col4x1_e` (E orientation, macros right) | post-flow Hold-fail @ TT | E orientation routes but needs hold-fix |
+| 1003 | `mimo_area_t12c` (util 28/density 36) | 38 Magic overlap DRC | clean routing + STA, only GDS-level DRC |
+
+**Practical implication for the design:** the picorv32 wrapper area is now characterised between 2.02 mm² (area-t1/halo) and 3.06 mm² (baseline). The mimo_rx_top sits between 8.59 mm² (area-t12c, pending DRC fix) and the previously-documented ~11+ mm² baseline. With Tier-1 PD knobs locked in, further area reduction requires either RTL changes (Tier 3: RV32I, single-port regfile, IRQ disable) or library swaps (FD-only SRAM plan).
+
+**Cross-cutting risk — STA against uncharacterised OCD `.lib`:** every PicoRV32 slack number above is computed against a Liberty file whose numerical tables are byte-for-byte copies of the FD 512×8 5 V `.lib`. SPICE characterisation scaffolding has been added at [`characterization/sram_ocd/`](../characterization/sram_ocd/README.md) and [`characterization/sram_fd/`](../characterization/sram_fd/README.md). See [Memory Strategy.md](Memory%20Strategy.md) "OCD Liberty timing model is unverified" for the full audit.
+
+### DSP-chain area — updated 2026-05-31
+
+Three rounds of RTL area reduction have been applied since the original estimate.
+All figures are Yosys synthesis with `gf180mcu_as_sc_mcu7t3v3` TT/25°C/3.3 V.
+
+| Block | Original | After decimator | After sc/wgen | Change vs original |
+|---|---|---|---|---|
+| `sd_decimator ×4` | 759 k | — | — | — |
+| `sd_decimator_cic_only ×4` | — | **300 k** | **300 k** | **−459 k** |
+| `sc_detector` | 561 k | 305 k (resyn) | **193 k** | **−368 k** |
+| `weight_gen` | 298 k | 184 k (resyn) | **120 k** | **−178 k** |
+| `dc_removal` | 90 k | 50 k | 50 k | −40 k |
+| `frontend_buf_ctrl` | 48 k | 30 k | 30 k | −18 k |
+| `training_acc` | 211 k | 119 k | 119 k | −92 k |
+| `mrc_combiner` | 195 k | 121 k | 121 k | −74 k |
+| `energy_meas` | — | 98 k | 98 k | — |
+| `noise_floor_est` | — | 83 k | 83 k | — |
+| `sd_remod` | 35 k | 29 k | 29 k | −6 k |
+| **DSP stdcell total** | **~2,197 k** | **~1,319 k** | **~1,143 k** | **−1,054 k** |
+
+Changes made 2026-05-31:
+- `sd_decimator_cic_only ×4`: CIC N=3 only, no FIR, zero multipliers. SGE job 1104.
+- `sc_detector`: 16 parallel combinational 8×8 multipliers → 1 shared TDM multiplier.
+  16-step FSM, 16 cycles per sample (budget: 256 cycles at R=256). SGE job 1108.
+- `weight_gen`: 4 simultaneous 16×8 calibration wires → 1 serialised multiplier,
+  5 cycles per antenna × 4 antennas = 20-cycle ST_CALIBRATE (was 5). SGE job 1108.
+
+Decimator change rationale: `planning/cic-only-decimator-findings.md`
+sc_detector / weight_gen: see comments at top of each RTL file.
+
+Important interpretation:
+
+- this is still a standalone-block sum, so it should be treated as an upper-bound style estimate, not the exact integrated-top DSP area
+- the current top does **not** instantiate `nr_corr`, `nr_inner`, `nr_outer`, `calib`, or `mag2`
+- the earlier much larger standalone DSP estimate was too pessimistic because the `sc_detector` `final/metrics.json` area was inconsistent with the implementation logs
+- even with the corrected DSP estimate, the current integrated top picture still points to the CPU subsystem as the dominant area problem
 
 ### Still intentionally not solved in this pass
 
@@ -150,6 +375,46 @@ Before launching a full top PD run:
 5. Update `ol_mimo_rx_top/config.json` further if the clocking split changes macro/timing assumptions.
 6. Run a fresh top-level trial PD flow.
 7. Only after that treat full top-level PD results as architecture evidence.
+
+---
+
+## Measured area cut table
+
+Using the current best integrated top result:
+- `mimo_rx_top` run `987`
+- real content only: `stdcell + macros`
+- excluding fill, tap, and endcap overhead
+
+Measured real content in `987`:
+- total real content: `3.250 mm^2`
+- stdcells: `2.419 mm^2`
+- macros: `0.831 mm^2`
+
+Measured CPU wrapper reference:
+- `picorv32_wrap` run `985`
+- real content: `1.168 mm^2`
+- wrapper stdcells: `0.547 mm^2`
+- CPU SRAM macros: `0.622 mm^2`
+
+Measured macro split inside the integrated top:
+- CPU SRAM macros: `0.622 mm^2`
+- frontend DSP SRAM macro: `0.209 mm^2`
+
+Approximate integrated-top budget by category:
+- CPU subsystem total: `1.168 mm^2`
+- frontend DSP SRAM macro: `0.209 mm^2`
+- remaining top content after subtracting CPU subsystem and frontend SRAM: `1.872 mm^2`
+
+Interpretation:
+- the `~15 mm^2` die from run `987` is mostly floorplan overhead and fill, not real design content
+- the real architectural problem is still `3.25 mm^2` of content versus a `2.00 mm^2` target
+- the gap to close in real content is about `1.25 mm^2`
+
+Decision ranking from these measured numbers:
+1. CPU/control simplification remains the biggest single lever.
+2. Frontend SRAM count is a secondary lever, but much smaller than CPU removal/simplification.
+3. Remaining DSP/control logic is still large enough that feature cuts are required even after CPU work.
+4. Floorplan tightening is necessary later, but it cannot close a `~1.25 mm^2` real-content gap by itself.
 
 ---
 

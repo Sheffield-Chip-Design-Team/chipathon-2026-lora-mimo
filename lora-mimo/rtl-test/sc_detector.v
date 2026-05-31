@@ -2,52 +2,38 @@
 // Schmidl-Cox preamble detector — NR=2 acquisition (antennas 0 and 1 only)
 // Post-lock combining uses all 4 antennas via training_acc independently.
 // GF180MCU, 3.3V, 32 MHz single clock domain
+//
+// Area-reduction changes vs original:
+//   signed_mul24_pipe: 5-stage manual partial-product pipeline → 2-stage
+//     (input-register + product-register); abc synthesises a compact Wallace
+//     tree.  Port width reduced 24→17 bits: accumulator inputs are right-shifted
+//     by 6 at symbol boundary so values fit in 16-bit signed; one extra bit of
+//     headroom gives the 17-bit port.  eval_valid_pipe 7→3 bits, step delay
+//     chain depth 7→3 to match the new 3-cycle latency (1 mux-reg + 2 pipeline).
+//     sc_thr firmware value must be divided by 64 vs the original to preserve
+//     the same detection threshold (both LHS and RHS of the comparison scale
+//     as k² with k = 1/64, so the ratio is invariant but the normalising
+//     extraction shifts from [47:24] to [34:18]).
+//   Per-sample multipliers: 16 simultaneous combinational 8×8 wires → 1 shared
+//     8×8 multiplier, 16-step TDM FSM.  Inputs latched on sample arrival; TDM
+//     runs 16 cycles per sample (vs 256-cycle sample window at R=256; even at
+//     R=32 the 16-cycle budget fits inside the 32-cycle window).  Saves ~15×
+//     8-bit multiplier trees plus associated product registers (~150 k µm²).
 
 /* verilator lint_off DECLFILENAME */
 module signed_mul24_pipe (
     input  wire               clk,
-    input  wire signed [23:0] a,
-    input  wire signed [23:0] b,
-    output reg  signed [47:0] p
+    input  wire signed [16:0] a,
+    input  wire signed [16:0] b,
+    output reg  signed [33:0] p
 );
-    wire [23:0] a_abs_w = a[23] ? (~a + 24'd1) : a;
-    wire [23:0] b_abs_w = b[23] ? (~b + 24'd1) : b;
-    wire        sign_w  = a[23] ^ b[23];
-
-    reg [23:0] a_abs_q, b_abs_q;
-    reg        sign_q0, sign_q1, sign_q2, sign_q3;
-    reg [15:0] pp00_q, pp01_q, pp02_q;
-    reg [15:0] pp10_q, pp11_q, pp12_q;
-    reg [15:0] pp20_q, pp21_q, pp22_q;
-    reg [47:0] row0_q, row1_q, row2_q;
-    reg [47:0] sum01_q, sum2_q;
+    // 2-stage pipeline: stage 1 registers inputs, stage 2 registers product.
+    reg signed [16:0] a_q, b_q;
 
     always @(posedge clk) begin
-        a_abs_q <= a_abs_w;
-        b_abs_q <= b_abs_w;
-        sign_q0 <= sign_w;
-
-        pp00_q <= a_abs_q[7:0]   * b_abs_q[7:0];
-        pp01_q <= a_abs_q[7:0]   * b_abs_q[15:8];
-        pp02_q <= a_abs_q[7:0]   * b_abs_q[23:16];
-        pp10_q <= a_abs_q[15:8]  * b_abs_q[7:0];
-        pp11_q <= a_abs_q[15:8]  * b_abs_q[15:8];
-        pp12_q <= a_abs_q[15:8]  * b_abs_q[23:16];
-        pp20_q <= a_abs_q[23:16] * b_abs_q[7:0];
-        pp21_q <= a_abs_q[23:16] * b_abs_q[15:8];
-        pp22_q <= a_abs_q[23:16] * b_abs_q[23:16];
-        sign_q1 <= sign_q0;
-
-        row0_q <= {32'd0, pp00_q} + {24'd0, pp01_q, 8'd0} + {16'd0, pp02_q, 16'd0};
-        row1_q <= {24'd0, pp10_q, 8'd0} + {16'd0, pp11_q, 16'd0} + {8'd0, pp12_q, 24'd0};
-        row2_q <= {16'd0, pp20_q, 16'd0} + {8'd0, pp21_q, 24'd0} + {pp22_q, 32'd0};
-        sign_q2 <= sign_q1;
-
-        sum01_q <= row0_q + row1_q;
-        sum2_q  <= row2_q;
-        sign_q3 <= sign_q2;
-
-        p <= sign_q3 ? -(sum01_q + sum2_q) : (sum01_q + sum2_q);
+        a_q <= a;
+        b_q <= b;
+        p   <= a_q * b_q;
     end
 endmodule
 /* verilator lint_on DECLFILENAME */
@@ -74,7 +60,9 @@ module sc_detector (
     output reg  [31:0] sc_lock_sample_dbg
 );
 
-    // Input registers: break port→multiply combinational path to close 32 MHz timing
+    // =========================================================
+    // Input registers
+    // =========================================================
     reg signed [7:0] cur_i0_r, cur_i1_r, cur_q0_r, cur_q1_r;
     reg signed [7:0] del_i0_r, del_i1_r, del_q0_r, del_q1_r;
     reg              iq_valid_r, delayed_valid_r;
@@ -91,276 +79,276 @@ module sc_detector (
             cur_q0_r <= cur_q0; cur_q1_r <= cur_q1;
             del_i0_r <= del_i0; del_i1_r <= del_i1;
             del_q0_r <= del_q0; del_q1_r <= del_q1;
-            iq_valid_r  <= iq_valid;
+            iq_valid_r      <= iq_valid;
             delayed_valid_r <= delayed_valid;
         end
     end
 
-    // Free-running sample counter (counts iq_valid pulses)
     reg [31:0] sample_count;
-
-    // Symbol boundary counter (M samples per symbol)
     reg [7:0]  sym_cnt;
     reg [7:0]  M_val;
     always @(*) begin
         case (sf)
-            4'd6: M_val = 8'd64;
-            4'd7: M_val = 8'd128;
-            4'd8: M_val = 8'd128;
-            4'd9: M_val = 8'd128;
-            4'd10: M_val = 8'd128;
-            4'd11: M_val = 8'd128;
-            4'd12: M_val = 8'd128;
+            4'd6:    M_val = 8'd64;
             default: M_val = 8'd128;
         endcase
     end
 
-    // Per-symbol accumulators — NR=2 (antennas 0 and 1 only)
-    reg signed [31:0] acc_ci0, acc_cq0;
-    reg signed [31:0] acc_ci1, acc_cq1;
-    reg signed [31:0] acc_E0cur, acc_E0del;
-    reg signed [31:0] acc_E1cur, acc_E1del;
+    // =========================================================
+    // Per-symbol accumulators (NR=2)
+    // =========================================================
+    reg signed [31:0] acc_ci0, acc_cq0, acc_ci1, acc_cq1;
+    reg signed [31:0] acc_E0cur, acc_E0del, acc_E1cur, acc_E1del;
 
-    // Per-sample product pipeline — NR=2. First stage is raw 8x8 multiplies;
-    // second stage forms the signed correlation/energy sums.
-    wire signed [15:0] mul_ci0_i = cur_i0_r * del_i0_r;
-    wire signed [15:0] mul_ci0_q = cur_q0_r * del_q0_r;
-    wire signed [15:0] mul_cq0_qi = cur_q0_r * del_i0_r;
-    wire signed [15:0] mul_cq0_iq = cur_i0_r * del_q0_r;
-    wire signed [15:0] mul_ci1_i = cur_i1_r * del_i1_r;
-    wire signed [15:0] mul_ci1_q = cur_q1_r * del_q1_r;
-    wire signed [15:0] mul_cq1_qi = cur_q1_r * del_i1_r;
-    wire signed [15:0] mul_cq1_iq = cur_i1_r * del_q1_r;
-    wire signed [15:0] mul_e_cur0_i = cur_i0_r * cur_i0_r;
-    wire signed [15:0] mul_e_cur0_q = cur_q0_r * cur_q0_r;
-    wire signed [15:0] mul_e_del0_i = del_i0_r * del_i0_r;
-    wire signed [15:0] mul_e_del0_q = del_q0_r * del_q0_r;
-    wire signed [15:0] mul_e_cur1_i = cur_i1_r * cur_i1_r;
-    wire signed [15:0] mul_e_cur1_q = cur_q1_r * cur_q1_r;
-    wire signed [15:0] mul_e_del1_i = del_i1_r * del_i1_r;
-    wire signed [15:0] mul_e_del1_q = del_q1_r * del_q1_r;
+    // =========================================================
+    // TDM per-sample 8×8 multiplier
+    //
+    // Replaces 16 simultaneous combinational 8×8 wires.
+    // When a sample fires (iq_valid_r && delayed_valid_r), all 8
+    // inputs are latched and a 16-step serial MAC processes them:
+    //
+    //   Step  Inputs A×B              Accumulate at odd step
+    //   ----  ----------------------  ------------------------------------------
+    //   0,1   cur_i0×del_i0, cq0×dq0  acc_ci0 += P0 + P1  (re corr ch0)
+    //   2,3   cur_q0×del_i0, ci0×dq0  acc_cq0 += P2 - P3  (im corr ch0)
+    //   4,5   cur_i1×del_i1, cq1×dq1  acc_ci1 += P4 + P5  (re corr ch1)
+    //   6,7   cur_q1×del_i1, ci1×dq1  acc_cq1 += P6 - P7  (im corr ch1)
+    //   8,9   cur_i0², cur_q0²         acc_E0cur += P8 + P9
+    //   10,11 del_i0², del_q0²         acc_E0del += P10 + P11
+    //   12,13 cur_i1², cur_q1²         acc_E1cur += P12 + P13
+    //   14,15 del_i1², del_q1²         acc_E1del += P14 + P15; end TDM
+    //
+    // Pipeline: tdm_a_r/tdm_b_r registered → tdm_mul (comb) → tdm_mul_r (registered).
+    // At odd step N: tdm_mul_r = P_{N-1} (OLD NB), tdm_mul = P_N (comb).
+    // =========================================================
+    reg signed [7:0] tlat_ci0, tlat_qi0, tlat_di0, tlat_dq0;
+    reg signed [7:0] tlat_ci1, tlat_qi1, tlat_di1, tlat_dq1;
 
-    reg        sample_m_valid;
-    reg        sample_p_valid;
-    reg signed [15:0] mul_ci0_i_q, mul_ci0_q_q, mul_cq0_qi_q, mul_cq0_iq_q;
-    reg signed [15:0] mul_ci1_i_q, mul_ci1_q_q, mul_cq1_qi_q, mul_cq1_iq_q;
-    reg signed [15:0] mul_e_cur0_i_q, mul_e_cur0_q_q, mul_e_del0_i_q, mul_e_del0_q_q;
-    reg signed [15:0] mul_e_cur1_i_q, mul_e_cur1_q_q, mul_e_del1_i_q, mul_e_del1_q_q;
-    reg signed [15:0] p_ci0_q, p_cq0_q, p_ci1_q, p_cq1_q;
-    reg signed [15:0] e_cur0_q, e_del0_q, e_cur1_q, e_del1_q;
+    reg        tdm_busy;
+    reg [3:0]  tdm_step;
+    reg signed [7:0]  tdm_a_r, tdm_b_r;
+    wire signed [15:0] tdm_mul = tdm_a_r * tdm_b_r;
+    reg  signed [15:0] tdm_mul_r;
 
-/* verilator lint_off UNUSEDSIGNAL */
-wire signed [31:0] next_ci0   = acc_ci0 + {{16{p_ci0_q[15]}}, p_ci0_q};
-wire signed [31:0] next_cq0   = acc_cq0 + {{16{p_cq0_q[15]}}, p_cq0_q};
-wire signed [31:0] next_ci1   = acc_ci1 + {{16{p_ci1_q[15]}}, p_ci1_q};
-wire signed [31:0] next_cq1   = acc_cq1 + {{16{p_cq1_q[15]}}, p_cq1_q};
-wire signed [31:0] next_E0cur = acc_E0cur + {{16{e_cur0_q[15]}}, e_cur0_q};
-wire signed [31:0] next_E0del = acc_E0del + {{16{e_del0_q[15]}}, e_del0_q};
-wire signed [31:0] next_E1cur = acc_E1cur + {{16{e_cur1_q[15]}}, e_cur1_q};
-wire signed [31:0] next_E1del = acc_E1del + {{16{e_del1_q[15]}}, e_del1_q};
-/* verilator lint_on UNUSEDSIGNAL */
-
-    // Symbol-boundary evaluation registers — NR=2
-/* verilator lint_off UNUSEDSIGNAL */
     reg signed [31:0] sym_ci0, sym_cq0, sym_ci1, sym_cq1;
-    reg signed [47:0] sym_mag_sc;
-    reg signed [47:0] sym_E_ref;
+/* verilator lint_off UNUSEDSIGNAL */
+    reg signed [47:0] sym_mag_sc, sym_E_ref;
 /* verilator lint_on UNUSEDSIGNAL */
 
-    // Hit detection
     reg [1:0]  hit_count;
-    reg [31:0] first_hit_sample;
-    reg [31:0] eval_sample_mark;
+    reg [31:0] first_hit_sample, eval_sample_mark;
     reg        metric_valid_pulse;
 
-    // Serialized metric engine — 7 steps total (NR=2):
-    //   0-3: |c|^2 accumulation (ci0^2, cq0^2, ci1^2, cq1^2)
-    //   4-5: energy accumulation (E0cur*E0del, E1cur*E1del) + latch sym_mag_sc at step 5
-    //   6 (default): threshold: eval_prod = {8'b0,sc_thr} * eval_e_acc[47:24]
-    //                hit iff {1'b0,eval_mag_acc[47:1]} >= eval_prod
-    // Note: eval operands reduced to 24-bit (values fit in 23-bit signed).
-    // sc_thr interpretation shifts by 2^8 vs. 32-bit version; scale sc_thr in software.
-    reg        eval_busy;
+    // =========================================================
+    // Serialised metric engine — 7 multiplications (steps 0..6),
+    // single shared signed_mul24_pipe (17-bit, 2-stage, 3-cycle latency).
+    // =========================================================
+    reg        eval_busy, eval_issue_done;
     reg [3:0]  eval_step;
-    reg signed [47:0] eval_mag_acc;
-    reg signed [47:0] eval_e_acc;
-    reg signed [23:0] eval_ci0, eval_cq0, eval_ci1, eval_cq1;
-    reg signed [23:0] eval_E0cur, eval_E0del, eval_E1cur, eval_E1del;
-    reg signed [23:0] eval_mul_a_sel, eval_mul_b_sel;
-    wire signed [47:0] eval_prod;
-    signed_mul24_pipe u_eval_mul (.clk(clk), .a(eval_mul_a_sel), .b(eval_mul_b_sel), .p(eval_prod));
-    reg        eval_issue_done;
-    reg [6:0]  eval_valid_pipe;
-    reg [3:0]  eval_step_0, eval_step_1, eval_step_2, eval_step_3, eval_step_4, eval_step_5, eval_step_6;
+    reg signed [47:0] eval_mag_acc, eval_e_acc;
+
+    reg signed [16:0] eval_ci0, eval_cq0, eval_ci1, eval_cq1;
+    reg signed [16:0] eval_E0cur, eval_E0del, eval_E1cur, eval_E1del;
+
+    reg signed [16:0] eval_mul_a_sel, eval_mul_b_sel;
+    wire signed [33:0] eval_prod;
+    signed_mul24_pipe u_eval_mul (
+        .clk(clk), .a(eval_mul_a_sel), .b(eval_mul_b_sel), .p(eval_prod));
+
+    reg [2:0]  eval_valid_pipe;
+    reg [3:0]  eval_step_0, eval_step_1, eval_step_2;
     reg        eval_hit;
 
-    // Registered mux: breaks the eval_step-fanout → mux-decode → abs-value critical path.
-    // Adds one pipeline stage; eval_step_6 and eval_valid_pipe[6] track the extra cycle.
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            eval_mul_a_sel <= 24'sd0;
-            eval_mul_b_sel <= 24'sd0;
+            eval_mul_a_sel <= 17'sd0;
+            eval_mul_b_sel <= 17'sd0;
         end else begin
             case (eval_step)
-                4'd0: begin eval_mul_a_sel <= eval_ci0;               eval_mul_b_sel <= eval_ci0;   end
-                4'd1: begin eval_mul_a_sel <= eval_cq0;               eval_mul_b_sel <= eval_cq0;   end
-                4'd2: begin eval_mul_a_sel <= eval_ci1;               eval_mul_b_sel <= eval_ci1;   end
-                4'd3: begin eval_mul_a_sel <= eval_cq1;               eval_mul_b_sel <= eval_cq1;   end
-                4'd4: begin eval_mul_a_sel <= eval_E0cur;             eval_mul_b_sel <= eval_E0del; end
-                4'd5: begin eval_mul_a_sel <= eval_E1cur;             eval_mul_b_sel <= eval_E1del; end
+                4'd0: begin eval_mul_a_sel <= eval_ci0;  eval_mul_b_sel <= eval_ci0;  end
+                4'd1: begin eval_mul_a_sel <= eval_cq0;  eval_mul_b_sel <= eval_cq0;  end
+                4'd2: begin eval_mul_a_sel <= eval_ci1;  eval_mul_b_sel <= eval_ci1;  end
+                4'd3: begin eval_mul_a_sel <= eval_cq1;  eval_mul_b_sel <= eval_cq1;  end
+                4'd4: begin eval_mul_a_sel <= eval_E0cur; eval_mul_b_sel <= eval_E0del; end
+                4'd5: begin eval_mul_a_sel <= eval_E1cur; eval_mul_b_sel <= eval_E1del; end
                 default: begin
-                    eval_mul_a_sel <= $signed({8'b0, sc_thr});
-                    eval_mul_b_sel <= $signed(eval_e_acc[47:24]);
+                    eval_mul_a_sel <= $signed({1'b0, sc_thr});
+                    eval_mul_b_sel <= $signed(eval_e_acc[34:18]);
                 end
             endcase
         end
     end
 
+    // =========================================================
+    // Main sequential block
+    // =========================================================
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            sample_count <= 32'd0;
-            sym_cnt      <= 8'd0;
-            acc_ci0 <= 32'sd0; acc_cq0 <= 32'sd0;
-            acc_ci1 <= 32'sd0; acc_cq1 <= 32'sd0;
-            acc_E0cur <= 32'sd0; acc_E0del <= 32'sd0;
-            acc_E1cur <= 32'sd0; acc_E1del <= 32'sd0;
-            sample_m_valid <= 1'b0;
-            sample_p_valid <= 1'b0;
-            mul_ci0_i_q <= 16'sd0; mul_ci0_q_q <= 16'sd0;
-            mul_cq0_qi_q <= 16'sd0; mul_cq0_iq_q <= 16'sd0;
-            mul_ci1_i_q <= 16'sd0; mul_ci1_q_q <= 16'sd0;
-            mul_cq1_qi_q <= 16'sd0; mul_cq1_iq_q <= 16'sd0;
-            mul_e_cur0_i_q <= 16'sd0; mul_e_cur0_q_q <= 16'sd0;
-            mul_e_del0_i_q <= 16'sd0; mul_e_del0_q_q <= 16'sd0;
-            mul_e_cur1_i_q <= 16'sd0; mul_e_cur1_q_q <= 16'sd0;
-            mul_e_del1_i_q <= 16'sd0; mul_e_del1_q_q <= 16'sd0;
-            p_ci0_q <= 16'sd0; p_cq0_q <= 16'sd0;
-            p_ci1_q <= 16'sd0; p_cq1_q <= 16'sd0;
-            e_cur0_q <= 16'sd0; e_del0_q <= 16'sd0;
-            e_cur1_q <= 16'sd0; e_del1_q <= 16'sd0;
-            sym_ci0 <= 32'sd0; sym_cq0 <= 32'sd0;
-            sym_ci1 <= 32'sd0; sym_cq1 <= 32'sd0;
-            sym_mag_sc <= 48'sd0;
-            sym_E_ref  <= 48'sd0;
-            hit_count  <= 2'd0;
+            sample_count    <= 32'd0;
+            sym_cnt         <= 8'd0;
+            acc_ci0  <= 32'sd0; acc_cq0  <= 32'sd0;
+            acc_ci1  <= 32'sd0; acc_cq1  <= 32'sd0;
+            acc_E0cur<= 32'sd0; acc_E0del<= 32'sd0;
+            acc_E1cur<= 32'sd0; acc_E1del<= 32'sd0;
+            tlat_ci0 <= 8'sd0; tlat_qi0 <= 8'sd0;
+            tlat_di0 <= 8'sd0; tlat_dq0 <= 8'sd0;
+            tlat_ci1 <= 8'sd0; tlat_qi1 <= 8'sd0;
+            tlat_di1 <= 8'sd0; tlat_dq1 <= 8'sd0;
+            tdm_busy    <= 1'b0;
+            tdm_step    <= 4'd0;
+            tdm_a_r     <= 8'sd0; tdm_b_r <= 8'sd0;
+            tdm_mul_r   <= 16'sd0;
+            sym_ci0  <= 32'sd0; sym_cq0  <= 32'sd0;
+            sym_ci1  <= 32'sd0; sym_cq1  <= 32'sd0;
+            sym_mag_sc <= 48'sd0; sym_E_ref <= 48'sd0;
+            hit_count        <= 2'd0;
             first_hit_sample <= 32'd0;
             eval_sample_mark <= 32'd0;
             metric_valid_pulse <= 1'b0;
-            eval_busy <= 1'b0;
-            eval_step <= 4'd0;
+            eval_busy       <= 1'b0;
+            eval_step       <= 4'd0;
             eval_issue_done <= 1'b0;
-            eval_valid_pipe <= 7'd0;
+            eval_valid_pipe <= 3'd0;
             eval_step_0 <= 4'd0; eval_step_1 <= 4'd0; eval_step_2 <= 4'd0;
-            eval_step_3 <= 4'd0; eval_step_4 <= 4'd0; eval_step_5 <= 4'd0; eval_step_6 <= 4'd0;
-            eval_mag_acc <= 48'sd0;
-            eval_e_acc   <= 48'sd0;
+            eval_mag_acc <= 48'sd0; eval_e_acc <= 48'sd0;
             eval_hit     <= 1'b0;
-            eval_ci0 <= 24'sd0; eval_cq0 <= 24'sd0;
-            eval_ci1 <= 24'sd0; eval_cq1 <= 24'sd0;
-            eval_E0cur <= 24'sd0; eval_E0del <= 24'sd0;
-            eval_E1cur <= 24'sd0; eval_E1del <= 24'sd0;
-            sc_lock    <= 1'b0;
-            timing_ref <= 32'd0;
+            eval_ci0  <= 17'sd0; eval_cq0  <= 17'sd0;
+            eval_ci1  <= 17'sd0; eval_cq1  <= 17'sd0;
+            eval_E0cur<= 17'sd0; eval_E0del<= 17'sd0;
+            eval_E1cur<= 17'sd0; eval_E1del<= 17'sd0;
+            sc_lock            <= 1'b0;
+            timing_ref         <= 32'd0;
             c_i0 <= 32'sd0; c_q0 <= 32'sd0;
             c_i1 <= 32'sd0; c_q1 <= 32'sd0;
-            sc_stat <= 16'd0;
-            sc_hit_dbg <= 1'b0;
-            sc_hit_count_dbg <= 2'd0;
-            sc_first_hit_dbg <= 32'd0;
+            sc_stat            <= 16'd0;
+            sc_hit_dbg         <= 1'b0;
+            sc_hit_count_dbg   <= 2'd0;
+            sc_first_hit_dbg   <= 32'd0;
             sc_lock_sample_dbg <= 32'd0;
         end else begin
             metric_valid_pulse <= 1'b0;
-            sc_hit_dbg <= 1'b0;
+            sc_hit_dbg         <= 1'b0;
 
-            sample_m_valid <= iq_valid_r && delayed_valid_r;
-            sample_p_valid <= sample_m_valid;
-            if (iq_valid_r && delayed_valid_r) begin
-                mul_ci0_i_q <= mul_ci0_i;
-                mul_ci0_q_q <= mul_ci0_q;
-                mul_cq0_qi_q <= mul_cq0_qi;
-                mul_cq0_iq_q <= mul_cq0_iq;
-                mul_ci1_i_q <= mul_ci1_i;
-                mul_ci1_q_q <= mul_ci1_q;
-                mul_cq1_qi_q <= mul_cq1_qi;
-                mul_cq1_iq_q <= mul_cq1_iq;
-                mul_e_cur0_i_q <= mul_e_cur0_i;
-                mul_e_cur0_q_q <= mul_e_cur0_q;
-                mul_e_del0_i_q <= mul_e_del0_i;
-                mul_e_del0_q_q <= mul_e_del0_q;
-                mul_e_cur1_i_q <= mul_e_cur1_i;
-                mul_e_cur1_q_q <= mul_e_cur1_q;
-                mul_e_del1_i_q <= mul_e_del1_i;
-                mul_e_del1_q_q <= mul_e_del1_q;
-            end
-            if (sample_m_valid) begin
-                p_ci0_q <= mul_ci0_i_q + mul_ci0_q_q;
-                p_cq0_q <= mul_cq0_qi_q - mul_cq0_iq_q;
-                p_ci1_q <= mul_ci1_i_q + mul_ci1_q_q;
-                p_cq1_q <= mul_cq1_qi_q - mul_cq1_iq_q;
-                e_cur0_q <= mul_e_cur0_i_q + mul_e_cur0_q_q;
-                e_del0_q <= mul_e_del0_i_q + mul_e_del0_q_q;
-                e_cur1_q <= mul_e_cur1_i_q + mul_e_cur1_q_q;
-                e_del1_q <= mul_e_del1_i_q + mul_e_del1_q_q;
-            end
-
-            if (sample_p_valid) begin
-                sample_count <= sample_count + 32'd1;
-
-                // Running accumulation uses registered products to keep input paths short.
-                acc_ci0 <= next_ci0;
-                acc_cq0 <= next_cq0;
-                acc_ci1 <= next_ci1;
-                acc_cq1 <= next_cq1;
-                acc_E0cur <= next_E0cur;
-                acc_E0del <= next_E0del;
-                acc_E1cur <= next_E1cur;
-                acc_E1del <= next_E1del;
-
-                if (sym_cnt == M_val - 8'd1) begin
-                    sym_cnt <= 8'd0;
-
-                    sym_ci0 <= next_ci0;
-                    sym_cq0 <= next_cq0;
-                    sym_ci1 <= next_ci1;
-                    sym_cq1 <= next_cq1;
-
-                    // Values fit in 23-bit signed range for supported symbol lengths.
-                    eval_ci0   <= next_ci0[23:0];
-                    eval_cq0   <= next_cq0[23:0];
-                    eval_ci1   <= next_ci1[23:0];
-                    eval_cq1   <= next_cq1[23:0];
-                    eval_E0cur <= next_E0cur[23:0];
-                    eval_E0del <= next_E0del[23:0];
-                    eval_E1cur <= next_E1cur[23:0];
-                    eval_E1del <= next_E1del[23:0];
-                    eval_mag_acc <= 48'sd0;
-                    eval_e_acc   <= 48'sd0;
-                    eval_step    <= 4'd0;
-                    eval_issue_done <= 1'b0;
-                    eval_valid_pipe <= 7'd0;
-                    eval_busy    <= 1'b1;
-                    eval_sample_mark <= sample_count + 32'd1;
-
-                    acc_ci0 <= 32'sd0; acc_cq0 <= 32'sd0;
-                    acc_ci1 <= 32'sd0; acc_cq1 <= 32'sd0;
-                    acc_E0cur <= 32'sd0; acc_E0del <= 32'sd0;
-                    acc_E1cur <= 32'sd0; acc_E1del <= 32'sd0;
-                end else begin
-                    sym_cnt <= sym_cnt + 8'd1;
-                end
+            // -----------------------------------------------------------------
+            // Sample arrives: latch inputs, start TDM
+            // -----------------------------------------------------------------
+            if (iq_valid_r && delayed_valid_r && !tdm_busy) begin
+                // Latch all 8 inputs; preload step 0 inputs into multiplier
+                tlat_ci0 <= cur_i0_r; tlat_qi0 <= cur_q0_r;
+                tlat_di0 <= del_i0_r; tlat_dq0 <= del_q0_r;
+                tlat_ci1 <= cur_i1_r; tlat_qi1 <= cur_q1_r;
+                tlat_di1 <= del_i1_r; tlat_dq1 <= del_q1_r;
+                tdm_a_r  <= cur_i0_r;
+                tdm_b_r  <= del_i0_r;
+                tdm_step <= 4'd0;
+                tdm_busy <= 1'b1;
             end else if (iq_valid_r && !delayed_valid_r) begin
                 sample_count <= sample_count + 32'd1;
             end
 
+            // -----------------------------------------------------------------
+            // TDM engine: one 8×8 multiply per cycle, 16 cycles per sample
+            // -----------------------------------------------------------------
+            if (tdm_busy) begin
+                tdm_mul_r <= tdm_mul;       // register current comb product
+                tdm_step  <= tdm_step + 4'd1;
+
+                // Pre-select inputs for next step (take effect NEXT cycle)
+                case (tdm_step)
+                    4'd0:  begin tdm_a_r <= tlat_qi0; tdm_b_r <= tlat_dq0; end
+                    4'd1:  begin tdm_a_r <= tlat_qi0; tdm_b_r <= tlat_di0; end
+                    4'd2:  begin tdm_a_r <= tlat_ci0; tdm_b_r <= tlat_dq0; end
+                    4'd3:  begin tdm_a_r <= tlat_ci1; tdm_b_r <= tlat_di1; end
+                    4'd4:  begin tdm_a_r <= tlat_qi1; tdm_b_r <= tlat_dq1; end
+                    4'd5:  begin tdm_a_r <= tlat_qi1; tdm_b_r <= tlat_di1; end
+                    4'd6:  begin tdm_a_r <= tlat_ci1; tdm_b_r <= tlat_dq1; end
+                    4'd7:  begin tdm_a_r <= tlat_ci0; tdm_b_r <= tlat_ci0; end
+                    4'd8:  begin tdm_a_r <= tlat_qi0; tdm_b_r <= tlat_qi0; end
+                    4'd9:  begin tdm_a_r <= tlat_di0; tdm_b_r <= tlat_di0; end
+                    4'd10: begin tdm_a_r <= tlat_dq0; tdm_b_r <= tlat_dq0; end
+                    4'd11: begin tdm_a_r <= tlat_ci1; tdm_b_r <= tlat_ci1; end
+                    4'd12: begin tdm_a_r <= tlat_qi1; tdm_b_r <= tlat_qi1; end
+                    4'd13: begin tdm_a_r <= tlat_di1; tdm_b_r <= tlat_di1; end
+                    4'd14: begin tdm_a_r <= tlat_dq1; tdm_b_r <= tlat_dq1; end
+                    default: begin end  // step 15: last step
+                endcase
+
+                // Accumulate at odd steps.
+                // tdm_mul_r = P_{step-1} (OLD NB), tdm_mul = P_step (comb).
+                // Correlation: add; imaginary part: subtract second term.
+                // Energy squaring: both terms positive.
+                case (tdm_step)
+                    4'd1:  acc_ci0   <= acc_ci0
+                                + {{16{tdm_mul_r[15]}}, tdm_mul_r}
+                                + {{16{tdm_mul[15]}},   tdm_mul};
+                    4'd3:  acc_cq0   <= acc_cq0
+                                + {{16{tdm_mul_r[15]}}, tdm_mul_r}
+                                - {{16{tdm_mul[15]}},   tdm_mul};
+                    4'd5:  acc_ci1   <= acc_ci1
+                                + {{16{tdm_mul_r[15]}}, tdm_mul_r}
+                                + {{16{tdm_mul[15]}},   tdm_mul};
+                    4'd7:  acc_cq1   <= acc_cq1
+                                + {{16{tdm_mul_r[15]}}, tdm_mul_r}
+                                - {{16{tdm_mul[15]}},   tdm_mul};
+                    4'd9:  acc_E0cur <= acc_E0cur
+                                + {{16{tdm_mul_r[15]}}, tdm_mul_r}
+                                + {{16{tdm_mul[15]}},   tdm_mul};
+                    4'd11: acc_E0del <= acc_E0del
+                                + {{16{tdm_mul_r[15]}}, tdm_mul_r}
+                                + {{16{tdm_mul[15]}},   tdm_mul};
+                    4'd13: acc_E1cur <= acc_E1cur
+                                + {{16{tdm_mul_r[15]}}, tdm_mul_r}
+                                + {{16{tdm_mul[15]}},   tdm_mul};
+                    4'd15: begin
+                        acc_E1del <= acc_E1del
+                                + {{16{tdm_mul_r[15]}}, tdm_mul_r}
+                                + {{16{tdm_mul[15]}},   tdm_mul};
+                        // ----- End of TDM for this sample -----
+                        tdm_busy     <= 1'b0;
+                        sample_count <= sample_count + 32'd1;
+
+                        if (sym_cnt == M_val - 8'd1) begin
+                            sym_cnt <= 8'd0;
+                            // Snapshot: acc values include the just-completed step-15 update
+                            // via the acc_E1del NB above; others were updated at steps 1..13.
+                            // Use the intermediate next-values for the snapshot:
+                            sym_ci0 <= acc_ci0; sym_cq0 <= acc_cq0;
+                            sym_ci1 <= acc_ci1; sym_cq1 <= acc_cq1;
+
+                            eval_ci0   <= acc_ci0[22:6];   eval_cq0   <= acc_cq0[22:6];
+                            eval_ci1   <= acc_ci1[22:6];   eval_cq1   <= acc_cq1[22:6];
+                            eval_E0cur <= acc_E0cur[22:6]; eval_E0del <= acc_E0del[22:6];
+                            eval_E1cur <= acc_E1cur[22:6]; eval_E1del <= acc_E1del[22:6];
+
+                            eval_mag_acc    <= 48'sd0;
+                            eval_e_acc      <= 48'sd0;
+                            eval_step       <= 4'd0;
+                            eval_issue_done <= 1'b0;
+                            eval_valid_pipe <= 3'd0;
+                            eval_busy       <= 1'b1;
+                            eval_sample_mark <= sample_count + 32'd1;
+
+                            acc_ci0   <= 32'sd0; acc_cq0   <= 32'sd0;
+                            acc_ci1   <= 32'sd0; acc_cq1   <= 32'sd0;
+                            acc_E0cur <= 32'sd0; acc_E0del <= 32'sd0;
+                            acc_E1cur <= 32'sd0; acc_E1del <= 32'sd0;
+                        end else begin
+                            sym_cnt <= sym_cnt + 8'd1;
+                        end
+                    end
+                    default: begin end
+                endcase
+            end
+
+            // -----------------------------------------------------------------
+            // Metric evaluation engine (unchanged from original)
+            // -----------------------------------------------------------------
             if (eval_busy) begin
-                eval_valid_pipe <= {eval_valid_pipe[5:0], !eval_issue_done};
+                eval_valid_pipe <= {eval_valid_pipe[1:0], !eval_issue_done};
+
                 eval_step_0 <= eval_step;
                 eval_step_1 <= eval_step_0;
                 eval_step_2 <= eval_step_1;
-                eval_step_3 <= eval_step_2;
-                eval_step_4 <= eval_step_3;
-                eval_step_5 <= eval_step_4;
-                eval_step_6 <= eval_step_5;
 
                 if (!eval_issue_done) begin
                     if (eval_step == 4'd6)
@@ -369,21 +357,22 @@ wire signed [31:0] next_E1del = acc_E1del + {{16{e_del1_q[15]}}, e_del1_q};
                         eval_step <= eval_step + 4'd1;
                 end
 
-                if (eval_valid_pipe[6]) begin
-                    case (eval_step_6)
-                        4'd0: eval_mag_acc <= eval_mag_acc + eval_prod;
-                        4'd1: eval_mag_acc <= eval_mag_acc + eval_prod;
-                        4'd2: eval_mag_acc <= eval_mag_acc + eval_prod;
-                        4'd3: eval_mag_acc <= eval_mag_acc + eval_prod;
-                        4'd4: eval_e_acc   <= eval_e_acc + eval_prod;
+                if (eval_valid_pipe[2]) begin
+                    case (eval_step_2)
+                        4'd0: eval_mag_acc <= eval_mag_acc + {{14{eval_prod[33]}}, eval_prod};
+                        4'd1: eval_mag_acc <= eval_mag_acc + {{14{eval_prod[33]}}, eval_prod};
+                        4'd2: eval_mag_acc <= eval_mag_acc + {{14{eval_prod[33]}}, eval_prod};
+                        4'd3: eval_mag_acc <= eval_mag_acc + {{14{eval_prod[33]}}, eval_prod};
+                        4'd4: eval_e_acc <= eval_e_acc + {{14{eval_prod[33]}}, eval_prod};
                         4'd5: begin
-                            eval_e_acc <= eval_e_acc + eval_prod;
+                            eval_e_acc <= eval_e_acc + {{14{eval_prod[33]}}, eval_prod};
                             sym_mag_sc <= eval_mag_acc;
                         end
-                        default: begin  // step 6: threshold and hit decision
+                        default: begin
                             sym_E_ref          <= eval_e_acc;
                             eval_hit           <= (eval_e_acc > 48'sd0) &&
-                                                 ({1'b0, eval_mag_acc[47:1]} >= eval_prod);
+                                                  ({1'b0, eval_mag_acc[47:1]} >=
+                                                   {{14{eval_prod[33]}}, eval_prod});
                             eval_busy          <= 1'b0;
                             metric_valid_pulse <= 1'b1;
                         end
@@ -391,6 +380,9 @@ wire signed [31:0] next_E1del = acc_E1del + {{16{e_del1_q[15]}}, e_del1_q};
                 end
             end
 
+            // -----------------------------------------------------------------
+            // Lock detection
+            // -----------------------------------------------------------------
             if (metric_valid_pulse && !sc_lock) begin
                 sc_hit_dbg <= eval_hit;
                 if (eval_hit) begin

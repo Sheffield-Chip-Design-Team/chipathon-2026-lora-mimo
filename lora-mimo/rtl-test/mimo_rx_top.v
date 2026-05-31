@@ -99,32 +99,42 @@ module mimo_rx_top (
     wire [63:0] rb_sigma2_sw;
 
     // =========================================================================
-    // Stage 1: ΣΔ Decimators ×4
+    // Stage 1: ΣΔ Decimators — CIC N=3 only, no FIR (×4 sd_decimator_cic_only)
+    // Zero multipliers. −3.15 dB average droop vs FIR-compensated path; chirp
+    // processing gain makes this irrelevant for LoRa demodulation (42+ dB margin
+    // at SF=7, all BWs).  See planning/cic-only-decimator-findings.md.
+    //
+    // Pass-through comparison for MIMO demo: set rb_mimo_mode to select
+    // mrc_combiner.mode=1 (single-antenna bypass) vs mode=0 (4-antenna MRC).
+    //
+    // TDM+FIR upgrade (−86 k µm² vs this, full sensitivity): see
+    // planning/sd_decimator-tdm-refactor.md — implement if area/time permit.
     // =========================================================================
     wire signed [7:0] dec_i [0:3];
     wire signed [7:0] dec_q [0:3];
-    wire              dec_valid [0:3];
+    wire [3:0]        dec_valid_all;
+    wire              iq_valid = dec_valid_all[0];
 
-    genvar g;
-    generate
-        for (g = 0; g < 4; g = g + 1) begin : gen_dec
-            sd_decimator u_dec (
-                .clk_32m     (clk),
-                .clk_16m     (clk),
-                .rst_n       (rst_n),
-                .iq_in_i     (IQ_DATA_I[g]),
-                .iq_in_q     (IQ_DATA_Q[g]),
-                .decim_ratio (rb_decim_ratio),
-                .iq_out_i    (dec_i[g]),
-                .iq_out_q    (dec_q[g]),
-                .iq_valid    (dec_valid[g])
-            );
-        end
-    endgenerate
-
-    // All decimators share the same ratio and are synchronous to the same clock,
-    // so dec_valid[0] is representative — use it as the common iq_valid strobe.
-    wire iq_valid = dec_valid[0];
+    sd_decimator_cic_only u_dec_0 (
+        .clk_32m(clk), .clk_16m(clk), .rst_n(rst_n),
+        .iq_in_i(IQ_DATA_I[0]), .iq_in_q(IQ_DATA_Q[0]),
+        .decim_ratio(rb_decim_ratio),
+        .iq_out_i(dec_i[0]), .iq_out_q(dec_q[0]), .iq_valid(dec_valid_all[0]));
+    sd_decimator_cic_only u_dec_1 (
+        .clk_32m(clk), .clk_16m(clk), .rst_n(rst_n),
+        .iq_in_i(IQ_DATA_I[1]), .iq_in_q(IQ_DATA_Q[1]),
+        .decim_ratio(rb_decim_ratio),
+        .iq_out_i(dec_i[1]), .iq_out_q(dec_q[1]), .iq_valid(dec_valid_all[1]));
+    sd_decimator_cic_only u_dec_2 (
+        .clk_32m(clk), .clk_16m(clk), .rst_n(rst_n),
+        .iq_in_i(IQ_DATA_I[2]), .iq_in_q(IQ_DATA_Q[2]),
+        .decim_ratio(rb_decim_ratio),
+        .iq_out_i(dec_i[2]), .iq_out_q(dec_q[2]), .iq_valid(dec_valid_all[2]));
+    sd_decimator_cic_only u_dec_3 (
+        .clk_32m(clk), .clk_16m(clk), .rst_n(rst_n),
+        .iq_in_i(IQ_DATA_I[3]), .iq_in_q(IQ_DATA_Q[3]),
+        .decim_ratio(rb_decim_ratio),
+        .iq_out_i(dec_i[3]), .iq_out_q(dec_q[3]), .iq_valid(dec_valid_all[3]));
 
     // =========================================================================
     // Stage 2: DC Removal ×4 (single module, all 4 branches)
@@ -158,10 +168,12 @@ module mimo_rx_top (
     // =========================================================================
     // Stage 3a: Frontend Buffer Controller (rolling SRAM window)
     // =========================================================================
-    // Frontend buffer SRAMs — gf180mcu_fd_ip_sram__sram512x8m8wm1 macros
+    // Frontend buffer SRAM — single 512x8 macro for the current NR=2 acquisition path.
+    // SC currently consumes only branches 0 and 1, so the second DSP SRAM macro is omitted.
     wire [8:0]  sram0_A, sram1_A;
     wire [7:0]  sram0_D, sram1_D;
-    wire [7:0]  sram0_Q, sram1_Q;
+    wire [7:0]  sram0_Q;
+    wire [7:0]  sram1_Q = 8'h00;
     wire        sram0_CEN, sram1_CEN;
     wire        sram0_GWEN, sram1_GWEN;
 
@@ -175,15 +187,8 @@ module mimo_rx_top (
         .Q    (sram0_Q)
     );
 
-    gf180mcu_fd_ip_sram__sram512x8m8wm1 u_sram1 (
-        .CLK  (clk),
-        .CEN  (sram1_CEN),
-        .GWEN (sram1_GWEN),
-        .WEN  (8'h00),
-        .A    (sram1_A),
-        .D    (sram1_D),
-        .Q    (sram1_Q)
-    );
+    // No second frontend SRAM macro in the current area-reduced top build.
+    // The unused sram1 read data is tied to zero above.
 
     wire signed [7:0] cur_i [0:3];
     wire signed [7:0] cur_q [0:3];

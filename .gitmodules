@@ -10,3 +10,13 @@
 [submodule "lora-mimo/ip/sscs-chipathon-2026"]
 	path = lora-mimo/ip/sscs-chipathon-2026
 	url = https://github.com/sscs-ose/sscs-chipathon-2026.git
+[submodule "lora-mimo/ip/gf180mcu_osu_sc"]
+	path = lora-mimo/ip/gf180mcu_osu_sc
+	url = https://github.com/stineje/globalfoundries-pdk-libs-gf180mcu_osu_sc.git
+[submodule "lora-mimo/ip/ws-run1"]
+	url = https://github.com/wafer-space/ws-run1
+	path = lora-mimo/ip/ws-run1
+	branch = main
+[submodule "lora-mimo/ip/gf180mcu_as_sc_mcu7t3v3"]
+	path = lora-mimo/ip/gf180mcu_as_sc_mcu7t3v3
+	url = https://github.com/AvalonSemiconductors/gf180mcu_as_sc_mcu7t3v3.git
