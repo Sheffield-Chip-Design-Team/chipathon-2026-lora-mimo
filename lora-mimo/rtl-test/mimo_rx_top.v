@@ -76,7 +76,8 @@ module mimo_rx_top (
     wire        rb_energy_gate_en;
     wire [15:0] rb_energy_thr;
     wire [7:0]  rb_pkt_timeout_syms;
-    wire [7:0]  rb_rx_gain_shadow_0, rb_rx_gain_shadow_1;
+    wire [7:0]  rb_rx_gain_shadow_0, rb_rx_gain_shadow_1,
+                rb_rx_gain_shadow_2, rb_rx_gain_shadow_3;
     wire [7:0]  rb_tx_gain_0, rb_tx_gain_1;
     wire        rb_rx_gain_commit;
     wire        rb_wgt_src, rb_wgt_auto_commit;
@@ -628,6 +629,8 @@ module mimo_rx_top (
         .pkt_timeout_syms(rb_pkt_timeout_syms),
         .rx_gain_shadow_0(rb_rx_gain_shadow_0),
         .rx_gain_shadow_1(rb_rx_gain_shadow_1),
+        .rx_gain_shadow_2(rb_rx_gain_shadow_2),
+        .rx_gain_shadow_3(rb_rx_gain_shadow_3),
         .tx_gain_0       (rb_tx_gain_0),
         .tx_gain_1       (rb_tx_gain_1),
         .rx_gain_commit  (rb_rx_gain_commit),
