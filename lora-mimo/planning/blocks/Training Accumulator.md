@@ -361,6 +361,39 @@ The chirp-ref path remains viable if absolute `h_j` is required for a future fea
 
 ---
 
+## Area history
+
+All figures: Yosys synthesis, `gf180mcu_as_sc_mcu7t3v3` TT/25°C/3.3 V, top-module total including `signed_mul8_pipe` instances.
+
+| Version | Yosys area | Change | Notes |
+|---------|-----------|--------|-------|
+| Original (4 parallel multipliers per antenna cycle) | 211 k µm² | — | Baseline |
+| Round 2: TDM — 1 antenna per cycle, 4 shared muls | 119 k µm² | −92 k | Standalone local-area figure; ~153 k total in hier context |
+| Round 3: 4 muls → 2 muls, 2 sub-cycles per antenna | **132 k µm²** | **−21 k** | SGE job 1143; 4 × signed_mul8_pipe → 2 × signed_mul8_pipe |
+
+### Round 3 changes (2026-06-01)
+
+**4 multipliers → 2 multipliers** by splitting each antenna TDM state into two sub-cycles:
+
+| Sub-cycle | mul_0 | mul_1 | Result |
+|-----------|-------|-------|--------|
+| 0 (zi) | `I_k × ref_i` | `Q_k × ref_q` | `zi_latch = mul_0 + mul_1` |
+| 1 (zq) | `Q_k × ref_i` | `I_k × ref_q` | `zq = mul_0 − mul_1`; accumulate both |
+
+State 5 (E\_ref = `ref_i² + ref_q²`) retains a single sub-cycle — both products are ready in one clock.
+
+**Timing budget:**
+- Active cycles per sample: 4 antennas × 2 sub-steps + 1 E_ref = 9
+- Pipeline drain: 2 cycles
+- Total: **11 cycles per sample**
+- iq\_valid interval: ≥ 20 cycles — fits with 9-cycle margin
+
+**Removed pipeline stage:** the `prod_zi_q / prod_zq_q / prod_state_q / prod_valid_q / prod_last_q` register bank (37 bits) is eliminated; zi and zq are accumulated directly from the pipeline output, with `zi_latch` (16-bit) bridging the two sub-cycles.
+
+**Verified:** all 7 tb\_dsp\_chain self-checks pass (SGE job 1141).
+
+---
+
 ## Related Blocks
 
 - [Frontend Buffer Controller](Frontend%20Buffer%20Controller.md) — holds rolling sample history; training accumulator reads from the decimator directly, not from SRAM
