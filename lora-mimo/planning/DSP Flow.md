@@ -113,11 +113,9 @@ See [DC Removal](blocks/DC%20Removal.md).
 
 ## Stage 4 — Frontend Buffer Controller
 
-Manages the shared 1 kB dual-SRAM rolling history. Provides the current and M-sample-delayed raw samples needed by the SC Preamble Detector for adjacent-symbol autocorrelation. Frozen on `sc_lock` to preserve the acquisition history.
+Block-based fixed-L delay buffer. Stores L = min(M, 256) channel-0 samples per symbol block in one 512×8 SRAM macro (SRAM0). Provides `del_i0/del_q0` (L-sample-delayed channel 0) and `delayed_valid` to the SC detector. Current samples for all 4 branches pass through directly.
 
-At SF7 with 8-bit storage using D=M read-before-write: 1-symbol (128-sample) rolling delay per branch fits exactly in 2×512B macros. SF8 requires 4 macros; SF9 requires 8.
-
-The dedicated frontend SRAM remains the primary acquisition buffer. An optional extension may let hardware borrow a reserved upper CPU SRAM window (`CPU_SRAM_BORROW_EN=1`) to extend buffer depth, but only when `CPU_RESET=1` or when firmware is explicitly excluded from that bank. If the borrow path is not available, `SF7` falls back to `NR=2` acquisition on branches `1` and `3` rather than four-branch operation that depends on unavailable sample memory.
+One SRAM macro covers all SF6–SF12. SF9–SF12 use L=256 (sub-symbol block); integration loss of 3–12 dB is acceptable given preamble repetition and the downstream timing refiner. CPU SRAM borrow path is removed — not needed.
 
 See [Frontend Buffer Controller](blocks/Frontend%20Buffer%20Controller.md).
 
@@ -125,12 +123,12 @@ See [Frontend Buffer Controller](blocks/Frontend%20Buffer%20Controller.md).
 
 ## Stage 5 — SC Preamble Detector
 
-Sliding-window complex autocorrelation across adjacent M-sample windows. Detects the LoRa preamble and provides coarse timing. No dechirp required — the LoRa chirp reference cancels algebraically in the autocorrelation product.
+Block-based complex autocorrelation over L = min(M, 256) samples per symbol period. NR=1 (channel 0 only). Detects the LoRa preamble and provides sample-accurate `timing_ref`. No dechirp required.
 
-**Per-branch statistic:**
+**Per-block statistic (channel 0):**
 
 ```
-c_j = Σ_{n=0}^{M-1} current_j[n] · conj(delayed_j[n])
+c_0 = Σ_{n=0}^{L-1} current_0[n] · conj(delayed_0[n])
 ```
 
 **Incoherent combine across branches:**
@@ -299,9 +297,9 @@ Start at full gain (G1 + BB_MAX on all SX1257s) for maximum weak-signal sensitiv
 | Constraint | Value | Impact |
 | --- | --- | --- |
 | Decimation ratios | R=256, 128, 64, 32 | Native support for 125, 250, 500 kHz BW (1×) plus 1 MS/s (2× / 500 kHz); power-of-2 ensures integer M for all SF |
-| SC detection window | 2M samples (current + M-delayed) | Buffer stores M samples (D=M); SC correlation spans 2M |
+| SC detection window | L = min(M, 256) samples per block | Block-based buffer; one 512×8 SRAM covers SF6–SF12 |
 | Training accumulation | ~5 symbols (SC_HITS_REQ=2) | ~2 dB loss vs ideal 8-symbol average; acceptable baseline |
 | Weight gen (hardware) | ~50 clock cycles | Same-packet application feasible at all supported SF; ~1,390× margin at SF6, ~2,780× at SF7 (commit window = 4.25M samples between training_done and payload start) |
 | Weight gen (software) | < 5,000 cycles | ~14× margin at SF6/125 kHz, ~28× at SF7; late SC lock reduces this further (see Training Accumulator risks) |
-| Frontend Buffer SRAM | 1 kB (2 × 512 B macros) | SF7 maximum with D=M at 8-bit storage; SF8+ requires more macros |
+| Frontend Buffer SRAM | 512 B (1 × 512 B macro) | Channel 0 only; block-based L=256; covers SF6–SF12 |
 | ΣΔ re-mod | 3rd order, single instance | SQNR > 100 dB at OSR=64 (500 kHz BW) — LoRa headroom > 70 dB |
