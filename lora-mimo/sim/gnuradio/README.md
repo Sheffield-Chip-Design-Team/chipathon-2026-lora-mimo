@@ -24,7 +24,8 @@ Matches the ASIC pipeline in `planning/blocks/Training Accumulator.md` and
 ## Requirements
 
 ```bash
-export PYTHONPATH=/usr/lib/python3.12/site-packages:$PYTHONPATH
+# GNU Radio C extensions (pmt, gr) live in dist-packages, not site-packages
+export PYTHONPATH=/usr/lib/python3/dist-packages:/usr/lib/python3.12/site-packages:$PYTHONPATH
 ```
 
 ## Usage
