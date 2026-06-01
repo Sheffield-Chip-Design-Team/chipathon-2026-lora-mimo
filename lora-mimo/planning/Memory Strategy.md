@@ -184,6 +184,14 @@ SF8 support costs 2 additional proven macros (total 4 DSP SRAMs, 2 kB). The acce
 
 ### Optional CPU SRAM borrow extension
 
+> **DEPRECATED — DO NOT IMPLEMENT**
+>
+> The CPU SRAM borrow path was designed to extend the SC delay buffer to higher SFs
+> without adding more dedicated frontend SRAM macros. This is no longer needed.
+> The block-based fixed-L=256 frontend buffer fits in **one 512×8 SRAM macro for all
+> SFs (SF6–SF12)**. CPU memory must not be shared with the SC detector.
+> All `CPU_SRAM_BORROW_*` registers and logic are removed from the architecture.
+
 Dedicated frontend SRAM remains the primary acquisition buffer in all modes.
 
 An optional architecture extension may allow the Frontend Buffer Controller to extend its logical depth into a reserved upper CPU SRAM window.

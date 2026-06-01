@@ -1,7 +1,26 @@
 // frontend_buf_ctrl.v
-// Frontend buffer controller for 2x single-port 512x8 SRAMs
-// SRAM0: channels 0+1 (4 bytes: i0,q0,i1,q1), SRAM1: channels 2+3
+// Frontend buffer controller — block-based SC delay buffer.
 // GF180MCU, 3.3V, 32 MHz single clock domain
+//
+// Block-based design (replaces sliding circular buffer):
+//   L = min(M, 256) samples stored per block in SRAM0 (channel 0 only).
+//   blk_cnt counts 0..M-1 across the full symbol period.
+//   store_en = (blk_cnt < L): SRAM writes and delayed_valid gated here.
+//   Ignore phase (blk_cnt >= L): SRAM idle, delayed_valid=0.
+//   block_ready: set after first complete symbol period (blk_cnt wraps once).
+//
+// SRAM layout (channel 0 only, 2 bytes/sample):
+//   i0[k] at address 2k, q0[k] at address 2k+1, k=0..L-1.
+//   Max L=256 → max address=511 → fits in 512×8 SRAM0.
+//
+// SC coverage per SF:
+//   SF7: L=128=M  (full symbol, 0 dB loss)
+//   SF8: L=256=M  (full symbol, 0 dB loss)
+//   SF9: L=256=M/2 (−3 dB)  SF10: M/4 (−6 dB) ... SF12: M/16 (−12 dB)
+//   All SFs: one 512×8 SRAM macro.
+//
+// Channels 1-3 delayed outputs: zeroed (unused by sc_detector; training_acc
+// reads dc_removal outputs directly).
 
 module frontend_buf_ctrl (
     input  wire        clk,
@@ -32,321 +51,193 @@ module frontend_buf_ctrl (
     output reg  [6:0]  wr_ptr
 );
 
-    // M = 2^sf, clamped to 128 max (7-bit wr_ptr wraps at M)
-    // sf range 6-12; sf=7 -> M=128 max we store; higher sf also uses M=128 window
-    // Effective M for buffer purposes: min(2^sf, 128)
-    reg [6:0] M_mask; // bitmask for modulo: wr_ptr & M_mask
+    // -----------------------------------------------------------------------
+    // Full symbol size M = 2^sf (12-bit, max 4096 at SF12)
+    // -----------------------------------------------------------------------
+    reg [11:0] M_full;
     always @(*) begin
         case (sf)
-            4'd6: M_mask = 7'h3F;  // M=64,  mask=63
-            4'd7: M_mask = 7'h7F;  // M=128, mask=127
-            default: M_mask = 7'h7F; // clamp to 128
+            4'd6:  M_full = 12'd64;
+            4'd7:  M_full = 12'd128;
+            4'd8:  M_full = 12'd256;
+            4'd9:  M_full = 12'd512;
+            4'd10: M_full = 12'd1024;
+            4'd11: M_full = 12'd2048;
+            4'd12: M_full = 12'd4096;
+            default: M_full = 12'd128;
         endcase
     end
 
-    reg [7:0] M_val;
-    always @(*) begin
-        case (sf)
-            4'd6: M_val = 8'd64;
-            4'd7: M_val = 8'd128;
-            default: M_val = 8'd128;
-        endcase
-    end
+    // L = min(M, 256): block size stored in SRAM
+    wire [8:0] L_val = (M_full > 12'd256) ? 9'd256 : {1'b0, M_full[7:0]};
 
-    // Sample count tracks how many samples have been written (capped at M)
-    reg [7:0] sample_count;
+    // -----------------------------------------------------------------------
+    // Block counter: counts 0..M_full-1 across the full symbol period
+    // store_en: first L samples of each block
+    // -----------------------------------------------------------------------
+    reg [11:0] blk_cnt;
+    wire store_en = (blk_cnt < {3'd0, L_val});
 
-    // Sub-cycle FSM: runs 16 sub-cycles per iq_valid
-    reg [4:0]  sub_cycle;
-    reg        fsm_active;
-
-    // Latched inputs for current sample
-    reg signed [7:0] lat_i0, lat_i1, lat_i2, lat_i3;
-    reg signed [7:0] lat_q0, lat_q1, lat_q2, lat_q3;
-
-    // Delayed read captures from SRAM (2-cycle read latency)
-    // byte_index: 0=i0,1=q0 on SRAM0; 2=i1,3=q1 on SRAM0
-    //             0=i2,1=q2 on SRAM1; 2=i3,3=q3 on SRAM1
-
-    // Read base address: 4*(wr_ptr mod M) for delayed sample
-    wire [6:0] rd_base_ptr = (wr_ptr + 7'd1) & M_mask; // oldest slot = (wr_ptr+1) mod M
-    wire [8:0] rd_base_addr = {2'b00, rd_base_ptr, 2'b00}; // *4
-
-    // Write base address
-    wire [8:0] wr_base_addr = {2'b00, wr_ptr & M_mask, 2'b00}; // *4
-
-    // SRAM read capture registers
-    reg [7:0] rd0_b0, rd0_b1, rd0_b2, rd0_b3;
-    reg [7:0] rd1_b0, rd1_b1, rd1_b2, rd1_b3;
+    // block_ready: set after first symbol period completes
+    reg block_ready;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            sram0_A <= 9'd0; sram0_D <= 8'd0; sram0_CEN <= 1'b1; sram0_GWEN <= 1'b1;
-            sram1_A <= 9'd0; sram1_D <= 8'd0; sram1_CEN <= 1'b1; sram1_GWEN <= 1'b1;
-            sub_cycle    <= 5'd0;
-            fsm_active   <= 1'b0;
-            wr_ptr       <= 7'd0;
-            sample_count <= 8'd0;
-            buf_valid    <= 1'b0;
-            delayed_valid <= 1'b0;
-            buf_mode     <= 2'd0;
-            lat_i0 <= 8'sd0; lat_i1 <= 8'sd0; lat_i2 <= 8'sd0; lat_i3 <= 8'sd0;
-            lat_q0 <= 8'sd0; lat_q1 <= 8'sd0; lat_q2 <= 8'sd0; lat_q3 <= 8'sd0;
-            cur_i0 <= 8'sd0; cur_i1 <= 8'sd0; cur_i2 <= 8'sd0; cur_i3 <= 8'sd0;
-            cur_q0 <= 8'sd0; cur_q1 <= 8'sd0; cur_q2 <= 8'sd0; cur_q3 <= 8'sd0;
-            del_i0 <= 8'sd0; del_i1 <= 8'sd0; del_i2 <= 8'sd0; del_i3 <= 8'sd0;
-            del_q0 <= 8'sd0; del_q1 <= 8'sd0; del_q2 <= 8'sd0; del_q3 <= 8'sd0;
-            rd0_b0 <= 8'd0; rd0_b1 <= 8'd0; rd0_b2 <= 8'd0; rd0_b3 <= 8'd0;
-            rd1_b0 <= 8'd0; rd1_b1 <= 8'd0; rd1_b2 <= 8'd0; rd1_b3 <= 8'd0;
-        end else begin
-            // Default: deassert chip enables
-            sram0_CEN <= 1'b1;
-            sram1_CEN <= 1'b1;
-            sram0_GWEN <= 1'b1;
-            sram1_GWEN <= 1'b1;
+            blk_cnt     <= 12'd0;
+            block_ready <= 1'b0;
+        end else if (iq_valid) begin
+            if (blk_cnt == M_full - 12'd1) begin
+                blk_cnt     <= 12'd0;
+                block_ready <= 1'b1;
+            end else begin
+                blk_cnt <= blk_cnt + 12'd1;
+            end
+        end
+    end
 
-            // Latch inputs on iq_valid and start sub-cycle FSM
+    // -----------------------------------------------------------------------
+    // Sub-cycle FSM: 8 cycles per sample (store phase only)
+    // Cycle 0-1: read i0 from SRAM (addr = 2*blk_cnt)
+    // Cycle 2-3: read q0 from SRAM (addr = 2*blk_cnt+1)
+    // Cycle 4:   latch del_i0/del_q0, assert delayed_valid
+    // Cycle 5-6: write i0 to SRAM
+    // Cycle 7-8: write q0 to SRAM, done
+    // -----------------------------------------------------------------------
+    reg [3:0]  sub_cycle;
+    reg        fsm_active;
+
+    reg signed [7:0] lat_i0, lat_q0;
+    reg [7:0]        rd_i0, rd_q0;
+
+    // SRAM base address for current block position (2 bytes per sample)
+    wire [8:0] sram_addr_i = {blk_cnt[7:0], 1'b0};       // 2*blk_cnt
+    wire [8:0] sram_addr_q = {blk_cnt[7:0], 1'b0} + 9'd1; // 2*blk_cnt+1
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            sram0_A   <= 9'd0; sram0_D   <= 8'd0;
+            sram0_CEN <= 1'b1; sram0_GWEN <= 1'b1;
+            sram1_A   <= 9'd0; sram1_D   <= 8'd0;
+            sram1_CEN <= 1'b1; sram1_GWEN <= 1'b1;
+            sub_cycle   <= 4'd0;
+            fsm_active  <= 1'b0;
+            lat_i0 <= 8'sd0; lat_q0 <= 8'sd0;
+            rd_i0  <= 8'd0;  rd_q0  <= 8'd0;
+            cur_i0 <= 8'sd0; cur_i1 <= 8'sd0;
+            cur_i2 <= 8'sd0; cur_i3 <= 8'sd0;
+            cur_q0 <= 8'sd0; cur_q1 <= 8'sd0;
+            cur_q2 <= 8'sd0; cur_q3 <= 8'sd0;
+            del_i0 <= 8'sd0; del_i1 <= 8'sd0;
+            del_i2 <= 8'sd0; del_i3 <= 8'sd0;
+            del_q0 <= 8'sd0; del_q1 <= 8'sd0;
+            del_q2 <= 8'sd0; del_q3 <= 8'sd0;
+            delayed_valid <= 1'b0;
+            buf_valid     <= 1'b0;
+            buf_mode      <= 2'd0;
+            wr_ptr        <= 7'd0;
+        end else begin
+            sram0_CEN  <= 1'b1;
+            sram0_GWEN <= 1'b1;
+            sram1_CEN  <= 1'b1;  // SRAM1 unused — always disabled
+            sram1_GWEN <= 1'b1;
+            delayed_valid <= 1'b0;
+
+            // Pass-through current samples on iq_valid; trigger FSM if store phase
             if (iq_valid && !fsm_active) begin
-                lat_i0 <= in_i0; lat_q0 <= in_q0;
-                lat_i1 <= in_i1; lat_q1 <= in_q1;
-                lat_i2 <= in_i2; lat_q2 <= in_q2;
-                lat_i3 <= in_i3; lat_q3 <= in_q3;
                 cur_i0 <= in_i0; cur_q0 <= in_q0;
                 cur_i1 <= in_i1; cur_q1 <= in_q1;
                 cur_i2 <= in_i2; cur_q2 <= in_q2;
                 cur_i3 <= in_i3; cur_q3 <= in_q3;
-                fsm_active <= 1'b1;
-                sub_cycle  <= 5'd0;
+                lat_i0 <= in_i0; lat_q0 <= in_q0;
+                if (store_en && !buf_freeze) begin
+                    fsm_active <= 1'b1;
+                    sub_cycle  <= 4'd0;
+                end
             end
 
             if (fsm_active) begin
                 case (sub_cycle)
-                    // -- Read phase (cycles 0-7): 4 bytes from each SRAM
-                    // SRAM0 byte 0 (i0 of delayed sample): assert for 2 cycles
-                    5'd0: begin
-                        sram0_A   <= rd_base_addr + 9'd0;
+                    // Read i0 (2 cycles for SRAM read latency)
+                    4'd0: begin
+                        sram0_A   <= sram_addr_i;
                         sram0_CEN <= 1'b0;
-                        sram0_GWEN <= 1'b1; // read
-                        sram1_A   <= rd_base_addr + 9'd0;
-                        sram1_CEN <= 1'b0;
-                        sram1_GWEN <= 1'b1;
-                        sub_cycle <= 5'd1;
+                        sub_cycle <= 4'd1;
                     end
-                    5'd1: begin
-                        sram0_A   <= rd_base_addr + 9'd0;
+                    4'd1: begin
+                        sram0_A   <= sram_addr_i;
                         sram0_CEN <= 1'b0;
-                        sram0_GWEN <= 1'b1;
-                        sram1_A   <= rd_base_addr + 9'd0;
-                        sram1_CEN <= 1'b0;
-                        sram1_GWEN <= 1'b1;
-                        rd0_b0 <= sram0_Q;
-                        rd1_b0 <= sram1_Q;
-                        sub_cycle <= 5'd2;
+                        rd_i0     <= sram0_Q;
+                        sub_cycle <= 4'd2;
                     end
-                    5'd2: begin
-                        sram0_A   <= rd_base_addr + 9'd1;
+                    // Read q0
+                    4'd2: begin
+                        sram0_A   <= sram_addr_q;
                         sram0_CEN <= 1'b0;
-                        sram0_GWEN <= 1'b1;
-                        sram1_A   <= rd_base_addr + 9'd1;
-                        sram1_CEN <= 1'b0;
-                        sram1_GWEN <= 1'b1;
-                        sub_cycle <= 5'd3;
+                        sub_cycle <= 4'd3;
                     end
-                    5'd3: begin
-                        sram0_A   <= rd_base_addr + 9'd1;
+                    4'd3: begin
+                        sram0_A   <= sram_addr_q;
                         sram0_CEN <= 1'b0;
-                        sram0_GWEN <= 1'b1;
-                        sram1_A   <= rd_base_addr + 9'd1;
-                        sram1_CEN <= 1'b0;
-                        sram1_GWEN <= 1'b1;
-                        rd0_b1 <= sram0_Q;
-                        rd1_b1 <= sram1_Q;
-                        sub_cycle <= 5'd4;
+                        rd_q0     <= sram0_Q;
+                        sub_cycle <= 4'd4;
                     end
-                    5'd4: begin
-                        sram0_A   <= rd_base_addr + 9'd2;
-                        sram0_CEN <= 1'b0;
-                        sram0_GWEN <= 1'b1;
-                        sram1_A   <= rd_base_addr + 9'd2;
-                        sram1_CEN <= 1'b0;
-                        sram1_GWEN <= 1'b1;
-                        sub_cycle <= 5'd5;
-                    end
-                    5'd5: begin
-                        sram0_A   <= rd_base_addr + 9'd2;
-                        sram0_CEN <= 1'b0;
-                        sram0_GWEN <= 1'b1;
-                        sram1_A   <= rd_base_addr + 9'd2;
-                        sram1_CEN <= 1'b0;
-                        sram1_GWEN <= 1'b1;
-                        rd0_b2 <= sram0_Q;
-                        rd1_b2 <= sram1_Q;
-                        sub_cycle <= 5'd6;
-                    end
-                    5'd6: begin
-                        sram0_A   <= rd_base_addr + 9'd3;
-                        sram0_CEN <= 1'b0;
-                        sram0_GWEN <= 1'b1;
-                        sram1_A   <= rd_base_addr + 9'd3;
-                        sram1_CEN <= 1'b0;
-                        sram1_GWEN <= 1'b1;
-                        sub_cycle <= 5'd7;
-                    end
-                    5'd7: begin
-                        sram0_A   <= rd_base_addr + 9'd3;
-                        sram0_CEN <= 1'b0;
-                        sram0_GWEN <= 1'b1;
-                        sram1_A   <= rd_base_addr + 9'd3;
-                        sram1_CEN <= 1'b0;
-                        sram1_GWEN <= 1'b1;
-                        rd0_b3 <= sram0_Q;
-                        rd1_b3 <= sram1_Q;
-                        sub_cycle <= 5'd8;
-                    end
-                    5'd8: begin
-                        // Latch delayed sample outputs
-                        if (buf_valid) begin
-                            del_i0 <= $signed(rd0_b0);
-                            del_q0 <= $signed(rd0_b1);
-                            del_i1 <= $signed(rd0_b2);
-                            del_q1 <= $signed(rd0_b3);
-                            del_i2 <= $signed(rd1_b0);
-                            del_q2 <= $signed(rd1_b1);
-                            del_i3 <= $signed(rd1_b2);
-                            del_q3 <= $signed(rd1_b3);
+                    // Latch delayed outputs
+                    4'd4: begin
+                        if (block_ready) begin
+                            del_i0        <= $signed(rd_i0);
+                            del_q0        <= $signed(rd_q0);
                             delayed_valid <= 1'b1;
-                        end else begin
-                            delayed_valid <= 1'b0;
                         end
-                        sub_cycle <= 5'd9;
+                        // Channels 1-3 delayed: unused, left at reset value (0)
+                        sub_cycle <= 4'd5;
                     end
-                    // -- Write phase (cycles 9-16): write 4 bytes per SRAM
-                    5'd9: begin
-                        if (!buf_freeze) begin
-                            sram0_A    <= wr_base_addr + 9'd0;
-                            sram0_D    <= lat_i0;
-                            sram0_CEN  <= 1'b0;
-                            sram0_GWEN <= 1'b0;
-                            sram1_A    <= wr_base_addr + 9'd0;
-                            sram1_D    <= lat_i2;
-                            sram1_CEN  <= 1'b0;
-                            sram1_GWEN <= 1'b0;
-                        end
-                        sub_cycle <= 5'd10;
+                    // Write i0 (2 cycles)
+                    4'd5: begin
+                        sram0_A    <= sram_addr_i;
+                        sram0_D    <= lat_i0;
+                        sram0_CEN  <= 1'b0;
+                        sram0_GWEN <= 1'b0;
+                        sub_cycle  <= 4'd6;
                     end
-                    5'd10: begin
-                        if (!buf_freeze) begin
-                            sram0_A    <= wr_base_addr + 9'd0;
-                            sram0_D    <= lat_i0;
-                            sram0_CEN  <= 1'b0;
-                            sram0_GWEN <= 1'b0;
-                            sram1_A    <= wr_base_addr + 9'd0;
-                            sram1_D    <= lat_i2;
-                            sram1_CEN  <= 1'b0;
-                            sram1_GWEN <= 1'b0;
-                        end
-                        sub_cycle <= 5'd11;
+                    4'd6: begin
+                        sram0_A    <= sram_addr_i;
+                        sram0_D    <= lat_i0;
+                        sram0_CEN  <= 1'b0;
+                        sram0_GWEN <= 1'b0;
+                        sub_cycle  <= 4'd7;
                     end
-                    5'd11: begin
-                        if (!buf_freeze) begin
-                            sram0_A    <= wr_base_addr + 9'd1;
-                            sram0_D    <= lat_q0;
-                            sram0_CEN  <= 1'b0;
-                            sram0_GWEN <= 1'b0;
-                            sram1_A    <= wr_base_addr + 9'd1;
-                            sram1_D    <= lat_q2;
-                            sram1_CEN  <= 1'b0;
-                            sram1_GWEN <= 1'b0;
-                        end
-                        sub_cycle <= 5'd12;
+                    // Write q0 (2 cycles)
+                    4'd7: begin
+                        sram0_A    <= sram_addr_q;
+                        sram0_D    <= lat_q0;
+                        sram0_CEN  <= 1'b0;
+                        sram0_GWEN <= 1'b0;
+                        sub_cycle  <= 4'd8;
                     end
-                    5'd12: begin
-                        if (!buf_freeze) begin
-                            sram0_A    <= wr_base_addr + 9'd1;
-                            sram0_D    <= lat_q0;
-                            sram0_CEN  <= 1'b0;
-                            sram0_GWEN <= 1'b0;
-                            sram1_A    <= wr_base_addr + 9'd1;
-                            sram1_D    <= lat_q2;
-                            sram1_CEN  <= 1'b0;
-                            sram1_GWEN <= 1'b0;
-                        end
-                        sub_cycle <= 5'd13;
-                    end
-                    5'd13: begin
-                        if (!buf_freeze) begin
-                            sram0_A    <= wr_base_addr + 9'd2;
-                            sram0_D    <= lat_i1;
-                            sram0_CEN  <= 1'b0;
-                            sram0_GWEN <= 1'b0;
-                            sram1_A    <= wr_base_addr + 9'd2;
-                            sram1_D    <= lat_i3;
-                            sram1_CEN  <= 1'b0;
-                            sram1_GWEN <= 1'b0;
-                        end
-                        sub_cycle <= 5'd14;
-                    end
-                    5'd14: begin
-                        if (!buf_freeze) begin
-                            sram0_A    <= wr_base_addr + 9'd2;
-                            sram0_D    <= lat_i1;
-                            sram0_CEN  <= 1'b0;
-                            sram0_GWEN <= 1'b0;
-                            sram1_A    <= wr_base_addr + 9'd2;
-                            sram1_D    <= lat_i3;
-                            sram1_CEN  <= 1'b0;
-                            sram1_GWEN <= 1'b0;
-                        end
-                        sub_cycle <= 5'd15;
-                    end
-                    5'd15: begin
-                        if (!buf_freeze) begin
-                            sram0_A    <= wr_base_addr + 9'd3;
-                            sram0_D    <= lat_q1;
-                            sram0_CEN  <= 1'b0;
-                            sram0_GWEN <= 1'b0;
-                            sram1_A    <= wr_base_addr + 9'd3;
-                            sram1_D    <= lat_q3;
-                            sram1_CEN  <= 1'b0;
-                            sram1_GWEN <= 1'b0;
-                        end
-                        sub_cycle <= 5'd16;
-                    end
-                    5'd16: begin
-                        if (!buf_freeze) begin
-                            sram0_A    <= wr_base_addr + 9'd3;
-                            sram0_D    <= lat_q1;
-                            sram0_CEN  <= 1'b0;
-                            sram0_GWEN <= 1'b0;
-                            sram1_A    <= wr_base_addr + 9'd3;
-                            sram1_D    <= lat_q3;
-                            sram1_CEN  <= 1'b0;
-                            sram1_GWEN <= 1'b0;
-                            // Advance write pointer and sample count
-                            wr_ptr <= (wr_ptr + 7'd1) & M_mask;
-                            if (sample_count < M_val)
-                                sample_count <= sample_count + 8'd1;
-                        end
+                    4'd8: begin
+                        sram0_A    <= sram_addr_q;
+                        sram0_D    <= lat_q0;
+                        sram0_CEN  <= 1'b0;
+                        sram0_GWEN <= 1'b0;
+                        wr_ptr     <= blk_cnt[6:0];
                         fsm_active <= 1'b0;
-                        sub_cycle  <= 5'd0;
+                        sub_cycle  <= 4'd0;
                     end
                     default: begin
                         fsm_active <= 1'b0;
-                        sub_cycle  <= 5'd0;
+                        sub_cycle  <= 4'd0;
                     end
                 endcase
             end
 
-            // buf_valid: asserted when sample_count >= M
-            buf_valid <= (sample_count >= {1'b0, M_val});
+            buf_valid <= block_ready;
 
-            // buf_mode
             if (!sc_lock)
-                buf_mode <= buf_valid ? 2'd1 : 2'd0; // acquiring / idle
+                buf_mode <= block_ready ? 2'd1 : 2'd0;
             else if (buf_freeze)
-                buf_mode <= 2'd2; // locked
+                buf_mode <= 2'd2;
             else
-                buf_mode <= 2'd3; // post-lock
+                buf_mode <= 2'd3;
         end
     end
 

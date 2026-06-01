@@ -86,12 +86,13 @@ module sc_detector (
     end
 
     reg [31:0] sample_count;
-    reg [7:0]  sym_cnt;
-    reg [7:0]  M_val;
+    reg [8:0]  sym_cnt;  // 9-bit to count up to 255 (SF8-SF12 L=256)
+    reg [8:0]  M_val;  // 9-bit: SF8 needs 256
     always @(*) begin
         case (sf)
-            4'd6:    M_val = 8'd64;
-            default: M_val = 8'd128;
+            4'd6:    M_val = 9'd64;
+            4'd7:    M_val = 9'd128;
+            default: M_val = 9'd256;  // SF8-SF12: accumulate L=256 samples per block
         endcase
     end
 
@@ -335,15 +336,14 @@ module sc_detector (
                     if (hit_count == sc_hits_req) begin
                         sc_lock            <= 1'b1;
                         sc_lock_sample_dbg <= eval_sample_mark;
-                        // (sc_hits_req+1)*M_val: M_val ∈ {64,128} → shift, no multiplier
-                        // n_hits_p1 ∈ 1..4 (3 bits); offset ≤ 4×128 = 512 (10 bits)
+                        // (sc_hits_req+1)*M: M=2^sf, shift by sf — no multiplier.
+                        // n_hits_p1 ∈ 1..4 (3 bits); offset ≤ 4×4096=16384 (14 bits).
                         begin : blk_timing
-                            reg [2:0] n_hits_p1;
-                            reg [9:0] sc_off;
+                            reg [2:0]  n_hits_p1;
+                            reg [13:0] sc_off;
                             n_hits_p1 = {1'b0, sc_hits_req} + 2'd1;
-                            sc_off = (sf == 4'd6) ? {1'b0, n_hits_p1, 6'd0}
-                                                  : {n_hits_p1, 7'd0};
-                            timing_ref <= eval_sample_mark - {22'd0, sc_off} + 32'd1;
+                            sc_off = {11'd0, n_hits_p1} << sf;
+                            timing_ref <= eval_sample_mark - {18'd0, sc_off} + 32'd1;
                         end
                         c_i0 <= {{8{sym_ci0[23]}}, sym_ci0};
                         c_q0 <= {{8{sym_cq0[23]}}, sym_cq0};

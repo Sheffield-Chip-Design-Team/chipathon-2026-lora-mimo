@@ -288,7 +288,13 @@ Sampled input values for GPIO_0-2.
 
 ---
 
-### `0x07` — CPU_SRAM_CTRL (read/write)
+### `0x07` — CPU_SRAM_CTRL ~~(read/write)~~ — **DEPRECATED, REGISTER REMOVED**
+
+> **DEPRECATED — DO NOT IMPLEMENT**
+>
+> The CPU SRAM borrow path is removed. The block-based fixed-L=256 frontend buffer
+> fits in one 512×8 SRAM for all SFs. Register `0x07` is now reserved (reads 0x00,
+> writes ignored). `CPU_SRAM_STATUS` (0x08) is similarly removed — see below.
 
 Control register for the optional CPU-SRAM borrow path used by the Frontend Buffer Controller.
 
@@ -306,7 +312,9 @@ Control register for the optional CPU-SRAM borrow path used by the Frontend Buff
 
 ---
 
-### `0x08` — CPU_SRAM_STATUS (read-only)
+### `0x08` — CPU_SRAM_STATUS ~~(read-only)~~ — **DEPRECATED, REGISTER REMOVED**
+
+> **DEPRECATED** — removed along with `CPU_SRAM_CTRL`. Register `0x08` is reserved.
 
 Status and BIST qualification for the fixed-bank CPU SRAM partition:
 

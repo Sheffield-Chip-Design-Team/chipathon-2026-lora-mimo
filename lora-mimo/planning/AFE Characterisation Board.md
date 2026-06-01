@@ -113,6 +113,28 @@ Recommended early tests:
 
 ---
 
+## PSRAM Validation Footprint (ACTION REQUIRED)
+
+The next board revision must add an **APS6404L-3SQR** (AP Memory, 64 Mbit QPI PSRAM) footprint to validate the ASIC PSRAM buffer controller before tapeout.
+
+**Package:** SOP-8, 1.27 mm pitch  
+**Pins:** VDD, VSS, CE#, SCK, SIO[0–3]
+
+**PCB requirements:**
+- 1 µF + 100 nF decoupling on VDD within 1 mm of device
+- SIO[0–3] and SCK traces short and matched-length — 32 MHz signal integrity matters
+- SIO[0–3] connect to FPGA pins that will also map to the ASIC JTAG pad positions (TCK/TMS/TDI/TDO) — route to a header for flexibility
+- CE# routed via the existing SPI CS mux header or independently for initial bring-up
+
+**What to validate:**
+- QPI init sequence, write timing at 125/250/500 kHz, read latency at 32 MHz
+- Interleaved read+write at 500 kHz (10-cycle margin — must be confirmed on hardware)
+- Signal integrity of SIO[0–3] at 32 MHz on the actual PCB
+
+The PSRAM RTL will not be finalised for tapeout without this hardware validation. See memory note `psram-validation-plan`.
+
+---
+
 ## Relationship To ASIC Work
 
 This board supports:
@@ -121,5 +143,6 @@ This board supports:
 - validation of the 8-symbol FFT acquisition assumptions
 - assessment of whether next-packet versus same-packet weight application is likely to matter in practice
 - early confidence in multi-channel coherence before committing further RTL / architecture effort
+- **PSRAM buffer controller validation** — critical path item before tapeout
 
 It should be treated as an input to the ASIC architecture, not only as a lab tool.
