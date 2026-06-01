@@ -292,14 +292,16 @@ FIR design: h = [−1, 4, −1] / 2 with round-to-nearest. H(ω) = 2 − cos(ω)
 
 Density sweep in progress (jobs 1163–1166). Baseline at util70: **182k µm²**.
 
-| SCL | Util config | Die area (×1) | SS WNS | SQNR | Status |
-|---|---|---|---|---|---|
-| `as_sc_mcu7t3v3` | 70% | **182 k µm²** | 0 ns | 28.1/28.6 dB ✓ | sweep baseline |
-| `as_sc_mcu7t3v3` | 75% | TBD | — | — | job 1164 |
-| `as_sc_mcu7t3v3` | 80% | TBD | — | — | job 1165 |
-| `as_sc_mcu7t3v3` | 85% | TBD | — | — | job 1166 |
+| SCL | Util config | Actual util | Die area (×1) | SS WNS | SQNR | Status |
+|---|---|---|---|---|---|---|
+| `as_sc_mcu7t3v3` | 70% | 80% | 182 k µm² | 0 ns | 28.1/28.6 dB ✓ | complete |
+| `as_sc_mcu7t3v3` | 75% | 84% | 171 k µm² | 0 ns | ✓ | complete |
+| **`as_sc_mcu7t3v3`** | **80%** | **89%** | **161 k µm²** | **0 ns** | **✓** | **selected ★** |
+| `as_sc_mcu7t3v3` | 85% | — | — | — | — | DPL-0036 fail |
 
-vs `sd_decimator_cic_only` at util80: 143 k µm² (CIC-only, fails SQNR). FIR overhead at util70: +39 k µm² per instance, **+156 k µm² total** across 4 instances.
+★ Same 89–90% actual utilisation sweet spot as `sd_decimator_cic_only`. `config_util80.json` promoted as selected config.
+
+vs `sd_decimator_cic_only` at util80: 143 k µm² (CIC-only, fails SQNR spec). FIR overhead: +18 k µm² per instance, **+72 k µm² total** across 4 instances. Net saving vs 9-tap Q1.14: −264 k µm² per instance, **−1,056 k µm² (~1 mm²) total**.
 
 #### Grand total (logic + SRAMs, stdcell area basis)
 
