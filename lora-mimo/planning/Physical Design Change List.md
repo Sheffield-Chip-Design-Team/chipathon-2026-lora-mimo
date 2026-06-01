@@ -284,6 +284,23 @@ Blocks hardened as standalone GDS macros and instantiated in the top-level PnR. 
 
 ★ Selected config. Flat-top equivalent (4 × ~187 k at FP\_CORE\_UTIL=40): ~748 k µm². **Macro saves ~176 k µm²** in die area with correct SS timing.
 
+**`sd_decimator_sa3` (CIC + 3-tap shift-add FIR)** — replaces `sd_decimator_cic_only`:
+
+CIC-only SQNR at R=64 was 14 dB (fails 28 dB spec). Root cause: sigma-delta alias noise folding into output band. A post-decimation FIR is mandatory.
+
+FIR design: h = [−1, 4, −1] / 2 with round-to-nearest. H(ω) = 2 − cos(ω). No multiplier — only shifts, adds, and a +1 rounding term. SQNR verified: I=28.1 dB, Q=28.6 dB (threshold 28 dB). SGE jobs 1158–1162.
+
+Density sweep in progress (jobs 1163–1166). Baseline at util70: **182k µm²**.
+
+| SCL | Util config | Die area (×1) | SS WNS | SQNR | Status |
+|---|---|---|---|---|---|
+| `as_sc_mcu7t3v3` | 70% | **182 k µm²** | 0 ns | 28.1/28.6 dB ✓ | sweep baseline |
+| `as_sc_mcu7t3v3` | 75% | TBD | — | — | job 1164 |
+| `as_sc_mcu7t3v3` | 80% | TBD | — | — | job 1165 |
+| `as_sc_mcu7t3v3` | 85% | TBD | — | — | job 1166 |
+
+vs `sd_decimator_cic_only` at util80: 143 k µm² (CIC-only, fails SQNR). FIR overhead at util70: +39 k µm² per instance, **+156 k µm² total** across 4 instances.
+
 #### Grand total (logic + SRAMs, stdcell area basis)
 
 | Category | µm² |
