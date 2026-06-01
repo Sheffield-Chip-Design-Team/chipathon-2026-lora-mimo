@@ -15,6 +15,12 @@
 //
 // Budget: R=256 → 256 cycles between iq_valid; 9 cycles used.
 // GF180MCU, 3.3V, 32 MHz
+//
+// Accumulator width reduction:
+//   acc_0..3, new_acc: 32 → 28-bit. Max value at SF12 = 4096×2×127² = 132M < 2^27.
+//   28-bit unsigned holds up to 268M — 1 guard bit of headroom.
+//   energy_sum_0..3 output ports stay 32-bit (zero-extended); no interface change.
+//   Saturation check updated: |new_acc[27:16] instead of |new_acc[31:16].
 
 module energy_meas (
     input  wire        clk_32m,
@@ -50,7 +56,7 @@ module energy_meas (
     end
 
     reg [12:0] win_cnt;
-    reg [31:0] acc_0, acc_1, acc_2, acc_3;
+    reg [27:0] acc_0, acc_1, acc_2, acc_3;  // 28-bit: max 132M < 2^27, 1 guard bit
     reg        win_end;
 
     // -----------------------------------------------------------------------
@@ -74,14 +80,14 @@ module energy_meas (
     // -----------------------------------------------------------------------
     reg [3:0] tdm_step;
 
-    // Blocking temp used inside case steps for new accumulator value
-    reg [31:0] new_acc;
+    // Blocking temp used inside case steps for new accumulator value (28-bit)
+    reg [27:0] new_acc;
 
     always @(posedge clk_32m or negedge rst_n) begin
         if (!rst_n) begin
             win_cnt               <= 13'd0;
             win_end               <= 1'b0;
-            acc_0 <= 32'd0; acc_1 <= 32'd0; acc_2 <= 32'd0; acc_3 <= 32'd0;
+            acc_0 <= 28'd0; acc_1 <= 28'd0; acc_2 <= 28'd0; acc_3 <= 28'd0;
             energy_sum_0 <= 32'd0; energy_sum_1 <= 32'd0;
             energy_sum_2 <= 32'd0; energy_sum_3 <= 32'd0;
             energy_0 <= 16'd0; energy_1 <= 16'd0;
@@ -101,10 +107,10 @@ module energy_meas (
 
             // sc_lock snapshot: sample current acc values
             if (sc_lock) begin
-                energy_0 <= (|acc_0[31:16]) ? 16'hFFFF : acc_0[15:0];
-                energy_1 <= (|acc_1[31:16]) ? 16'hFFFF : acc_1[15:0];
-                energy_2 <= (|acc_2[31:16]) ? 16'hFFFF : acc_2[15:0];
-                energy_3 <= (|acc_3[31:16]) ? 16'hFFFF : acc_3[15:0];
+                energy_0 <= (|acc_0[27:16]) ? 16'hFFFF : acc_0[15:0];
+                energy_1 <= (|acc_1[27:16]) ? 16'hFFFF : acc_1[15:0];
+                energy_2 <= (|acc_2[27:16]) ? 16'hFFFF : acc_2[15:0];
+                energy_3 <= (|acc_3[27:16]) ? 16'hFFFF : acc_3[15:0];
                 energy_snapshot_valid <= 1'b1;
             end
 
@@ -137,11 +143,11 @@ module energy_meas (
 
                 // Step 3: sq_out_r = q0²; update acc_0
                 4'd3: begin
-                    new_acc = acc_0 + {16'd0, i_sq_r} + {16'd0, sq_out_r};
-                    acc_0 <= win_end ? 32'd0 : new_acc;
+                    new_acc = acc_0 + {12'd0, i_sq_r} + {12'd0, sq_out_r};
+                    acc_0 <= win_end ? 28'd0 : new_acc;
                     if (win_end) begin
-                        energy_sum_0 <= new_acc;
-                        energy_0 <= (|new_acc[31:16]) ? 16'hFFFF : new_acc[15:0];
+                        energy_sum_0 <= {4'd0, new_acc};
+                        energy_0 <= (|new_acc[27:16]) ? 16'hFFFF : new_acc[15:0];
                     end
                     sq_in    <= lat_q1;
                     tdm_step <= 4'd4;
@@ -156,11 +162,11 @@ module energy_meas (
 
                 // Step 5: sq_out_r = q1²; update acc_1
                 4'd5: begin
-                    new_acc = acc_1 + {16'd0, i_sq_r} + {16'd0, sq_out_r};
-                    acc_1 <= win_end ? 32'd0 : new_acc;
+                    new_acc = acc_1 + {12'd0, i_sq_r} + {12'd0, sq_out_r};
+                    acc_1 <= win_end ? 28'd0 : new_acc;
                     if (win_end) begin
-                        energy_sum_1 <= new_acc;
-                        energy_1 <= (|new_acc[31:16]) ? 16'hFFFF : new_acc[15:0];
+                        energy_sum_1 <= {4'd0, new_acc};
+                        energy_1 <= (|new_acc[27:16]) ? 16'hFFFF : new_acc[15:0];
                     end
                     sq_in    <= lat_q2;
                     tdm_step <= 4'd6;
@@ -175,11 +181,11 @@ module energy_meas (
 
                 // Step 7: sq_out_r = q2²; update acc_2
                 4'd7: begin
-                    new_acc = acc_2 + {16'd0, i_sq_r} + {16'd0, sq_out_r};
-                    acc_2 <= win_end ? 32'd0 : new_acc;
+                    new_acc = acc_2 + {12'd0, i_sq_r} + {12'd0, sq_out_r};
+                    acc_2 <= win_end ? 28'd0 : new_acc;
                     if (win_end) begin
-                        energy_sum_2 <= new_acc;
-                        energy_2 <= (|new_acc[31:16]) ? 16'hFFFF : new_acc[15:0];
+                        energy_sum_2 <= {4'd0, new_acc};
+                        energy_2 <= (|new_acc[27:16]) ? 16'hFFFF : new_acc[15:0];
                     end
                     sq_in    <= lat_q3;
                     tdm_step <= 4'd8;
@@ -193,11 +199,11 @@ module energy_meas (
 
                 // Step 9: sq_out_r = q3²; update acc_3; pulse energy_valid if win_end
                 4'd9: begin
-                    new_acc = acc_3 + {16'd0, i_sq_r} + {16'd0, sq_out_r};
-                    acc_3 <= win_end ? 32'd0 : new_acc;
+                    new_acc = acc_3 + {12'd0, i_sq_r} + {12'd0, sq_out_r};
+                    acc_3 <= win_end ? 28'd0 : new_acc;
                     if (win_end) begin
-                        energy_sum_3 <= new_acc;
-                        energy_3 <= (|new_acc[31:16]) ? 16'hFFFF : new_acc[15:0];
+                        energy_sum_3 <= {4'd0, new_acc};
+                        energy_3 <= (|new_acc[27:16]) ? 16'hFFFF : new_acc[15:0];
                         energy_valid <= 1'b1;
                     end
                     tdm_step <= 4'd0;

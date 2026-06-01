@@ -19,6 +19,11 @@
 //     as k² with k = 1/64, so the ratio is invariant).
 //   Per-sample multipliers: 16 simultaneous combinational 8×8 wires → 1 shared
 //     8×8 multiplier, 8-step TDM FSM.
+//   eval_mag_acc/eval_e_acc: 48 → 28 bit. Max |C|² = 2×4095² < 2^25; 28 bits
+//     gives 3 bits headroom. sym_E_ref eliminated (was unused). sc_stat now
+//     reads sym_mag_sc[27:12] (same top-16-bits-of-useful-range semantics).
+//   timing_ref offset: replaced 32×32 hardware multiply with shift+concat.
+//     (sc_hits_req+1)*M_val where M_val ∈ {64,128} — pure wiring, no multiplier.
 
 /* verilator lint_off DECLFILENAME */
 module signed_mul24_pipe (
@@ -120,9 +125,7 @@ module sc_detector (
     reg  signed [15:0] tdm_mul_r;
 
     reg signed [23:0] sym_ci0, sym_cq0;
-/* verilator lint_off UNUSEDSIGNAL */
-    reg signed [47:0] sym_mag_sc, sym_E_ref;
-/* verilator lint_on UNUSEDSIGNAL */
+    reg signed [27:0] sym_mag_sc;   // max |C|² = 2×4095² < 2^25; 28-bit sufficient
 
     reg [1:0]  hit_count;
     reg [31:0] first_hit_sample, eval_sample_mark;
@@ -134,7 +137,7 @@ module sc_detector (
     // =========================================================
     reg        eval_busy, eval_issue_done;
     reg [3:0]  eval_step;
-    reg signed [47:0] eval_mag_acc, eval_e_acc;
+    reg signed [27:0] eval_mag_acc, eval_e_acc;  // 28-bit: 3-bit headroom over max 2^25
 
     reg signed [12:0] eval_ci0, eval_cq0;
     reg signed [12:0] eval_E0cur, eval_E0del;
@@ -181,7 +184,7 @@ module sc_detector (
             tdm_a_r     <= 8'sd0; tdm_b_r <= 8'sd0;
             tdm_mul_r   <= 16'sd0;
             sym_ci0  <= 24'sd0; sym_cq0  <= 24'sd0;
-            sym_mag_sc <= 48'sd0; sym_E_ref <= 48'sd0;
+            sym_mag_sc <= 28'sd0;
             hit_count        <= 2'd0;
             first_hit_sample <= 32'd0;
             eval_sample_mark <= 32'd0;
@@ -191,7 +194,7 @@ module sc_detector (
             eval_issue_done <= 1'b0;
             eval_valid_pipe <= 3'd0;
             eval_step_0 <= 4'd0; eval_step_1 <= 4'd0; eval_step_2 <= 4'd0;
-            eval_mag_acc <= 48'sd0; eval_e_acc <= 48'sd0;
+            eval_mag_acc <= 28'sd0; eval_e_acc <= 28'sd0;
             eval_hit     <= 1'b0;
             eval_ci0  <= 13'sd0; eval_cq0  <= 13'sd0;
             eval_E0cur<= 13'sd0; eval_E0del<= 13'sd0;
@@ -267,8 +270,8 @@ module sc_detector (
                             eval_ci0   <= acc_ci0[22:10];   eval_cq0   <= acc_cq0[22:10];
                             eval_E0cur <= acc_E0cur[22:10]; eval_E0del <= acc_E0del[22:10];
 
-                            eval_mag_acc    <= 48'sd0;
-                            eval_e_acc      <= 48'sd0;
+                            eval_mag_acc    <= 28'sd0;
+                            eval_e_acc      <= 28'sd0;
                             eval_step       <= 4'd0;
                             eval_issue_done <= 1'b0;
                             eval_valid_pipe <= 3'd0;
@@ -304,17 +307,16 @@ module sc_detector (
 
                 if (eval_valid_pipe[2]) begin
                     case (eval_step_2)
-                        4'd0: eval_mag_acc <= eval_mag_acc + {{22{eval_prod[25]}}, eval_prod};
-                        4'd1: eval_mag_acc <= eval_mag_acc + {{22{eval_prod[25]}}, eval_prod};
+                        4'd0: eval_mag_acc <= eval_mag_acc + {{2{eval_prod[25]}}, eval_prod};
+                        4'd1: eval_mag_acc <= eval_mag_acc + {{2{eval_prod[25]}}, eval_prod};
                         4'd2: begin
-                            eval_e_acc <= eval_e_acc + {{22{eval_prod[25]}}, eval_prod};
+                            eval_e_acc <= eval_e_acc + {{2{eval_prod[25]}}, eval_prod};
                             sym_mag_sc <= eval_mag_acc;
                         end
                         default: begin
-                            sym_E_ref          <= eval_e_acc;
-                            eval_hit           <= (eval_e_acc > 48'sd0) &&
-                                                  ({1'b0, eval_mag_acc[47:1]} >=
-                                                   {{22{eval_prod[25]}}, eval_prod});
+                            eval_hit           <= (eval_e_acc > 28'sd0) &&
+                                                  ({1'b0, eval_mag_acc[27:1]} >=
+                                                   {{2{eval_prod[25]}}, eval_prod});
                             eval_busy          <= 1'b0;
                             metric_valid_pulse <= 1'b1;
                         end
@@ -333,9 +335,16 @@ module sc_detector (
                     if (hit_count == sc_hits_req) begin
                         sc_lock            <= 1'b1;
                         sc_lock_sample_dbg <= eval_sample_mark;
-                        timing_ref <= eval_sample_mark
-                                    - ({29'd0, sc_hits_req} + 32'd1) * {24'd0, M_val}
-                                    + 32'd1;
+                        // (sc_hits_req+1)*M_val: M_val ∈ {64,128} → shift, no multiplier
+                        // n_hits_p1 ∈ 1..4 (3 bits); offset ≤ 4×128 = 512 (10 bits)
+                        begin : blk_timing
+                            reg [2:0] n_hits_p1;
+                            reg [9:0] sc_off;
+                            n_hits_p1 = {1'b0, sc_hits_req} + 2'd1;
+                            sc_off = (sf == 4'd6) ? {1'b0, n_hits_p1, 6'd0}
+                                                  : {n_hits_p1, 7'd0};
+                            timing_ref <= eval_sample_mark - {22'd0, sc_off} + 32'd1;
+                        end
                         c_i0 <= {{8{sym_ci0[23]}}, sym_ci0};
                         c_q0 <= {{8{sym_cq0[23]}}, sym_cq0};
                         sc_first_hit_dbg <= first_hit_sample;
@@ -349,7 +358,7 @@ module sc_detector (
                 sc_hit_count_dbg <= hit_count;
             end
 
-            sc_stat <= sym_mag_sc[47:32];
+            sc_stat <= {sym_mag_sc[27:13], 1'b0}; // top 15 useful bits, zero-padded LSB
         end
     end
 
