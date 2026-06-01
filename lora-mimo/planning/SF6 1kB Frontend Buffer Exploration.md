@@ -1,7 +1,14 @@
 # SF6 1kB Frontend Buffer Exploration
 
-> **Update — D=M read-before-write (see [Memory Strategy](Memory%20Strategy.md) and [Frontend Buffer Controller](blocks/Frontend%20Buffer%20Controller.md)):**
-> The original analysis below assumed a D=2M buffer (previous symbol + current symbol, 2M deep). That assumption was overly conservative. SC preamble detection only requires M samples of *stored* delay — the current sample arrives live from the decimator and is never read back from SRAM. Using a **D=M read-before-write** access pattern (read the M-old byte, then overwrite it with the current byte at the same address), the 2×512B macros support **SF7** (M=128, 128×4=512B exactly per macro). The "SF7 is severely constrained" conclusion below applies only to the D=2M model and is superseded.
+> **SUPERSEDED — HISTORICAL REFERENCE ONLY**
+>
+> The entire analysis in this document predates the block-based fixed-L=256 frontend buffer design.
+> The current architecture stores only channel 0 (i0, q0) in a block-based buffer with
+> L = min(M, 256) samples. One 512×8 SRAM macro supports **all SFs (SF6–SF12)**.
+> The SRAM sizing constraints, 4-channel interleaving, and D=M vs D=2M analysis below are
+> no longer applicable to the implemented design.
+>
+> See [`blocks/Frontend Buffer Controller.md`](blocks/Frontend%20Buffer%20Controller.md) for the current architecture.
 
 
 

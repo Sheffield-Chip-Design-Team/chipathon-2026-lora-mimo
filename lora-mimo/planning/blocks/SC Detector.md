@@ -9,7 +9,7 @@ RX path stage 3b. Schmidl-Cox preamble detector — locks onto the LoRa preamble
 
 ## Function
 
-Computes the Schmidl-Cox metric over a sliding window of M = 128 (SF7–12) or 64 (SF6) samples:
+Computes the Schmidl-Cox metric using a block-based correlator with L = min(M, 256) samples per symbol block, where M = 2^SF. SF6: L=64, SF7: L=128, SF8: L=256 (all full-symbol). SF9–SF12: L=256 (sub-symbol, 3–12 dB integration loss, acceptable given preamble repetition and downstream timing refiner).
 
 ```
 |C|² = (Σ x*[n] · x[n−M])²    (complex correlation)
@@ -37,7 +37,7 @@ On lock, `timing_ref` is set to the sample index of the first valid symbol bound
 | `sc_lock` | out | 1 | Preamble locked |
 | `timing_ref` | out | 32 | Sample index of first symbol boundary |
 | `c_i0/q0` | out | 32 | Final correlation phasor (diagnostic) |
-| `sc_stat` | out | 16 | `sym_mag_sc[47:32]` — rolling metric magnitude |
+| `sc_stat` | out | 16 | `sym_mag_sc[27:13]` — rolling metric magnitude (top 15 bits of 28-bit accumulator) |
 | `sc_hit_dbg` | out | 1 | Pulse on each metric hit |
 | `sc_hit_count_dbg` | out | 2 | Hit counter at lock time |
 | `sc_first_hit_dbg` | out | 32 | Sample index of first hit |
