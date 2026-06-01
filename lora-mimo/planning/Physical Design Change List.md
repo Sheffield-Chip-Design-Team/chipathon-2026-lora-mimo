@@ -264,11 +264,25 @@ All figures are Yosys synthesis with `gf180mcu_as_sc_mcu7t3v3` TT/25°C/3.3 V
 
 Blocks hardened as standalone GDS macros and instantiated in the top-level PnR. This achieves higher local utilisation than the global FP\_CORE\_UTIL=40 target, reducing die footprint.
 
-| Macro | Util config | Actual util | Die area (×1) | Instances | Die area total | DRC |
-|---|---|---|---|---|---|---|
-| `sd_decimator_cic_only` | 70% | 81% | 139 k µm² | 4 | **556 k µm²** | 0 |
+**Cell library comparison for `sd_decimator_cic_only`** (sweep results, SGE jobs 1144–1146, 1150, 1153–1156):
 
-Flat-top equivalent (4 × ~187 k at FP\_CORE\_UTIL=40): ~748 k µm². **Macro saves ~192 k µm²** in total die area.
+| SCL | Util config | Actual util | Die area (×1) | SS WNS | DRC |
+|---|---|---|---|---|---|
+| `fd_sc_mcu7t5v0` | 60% | 71% | 161 k µm² | −5.2 ns | 0 |
+| `fd_sc_mcu7t5v0` | 65% | 76% | 149 k µm² | −5.9 ns | 0 |
+| `fd_sc_mcu7t5v0` | 70% | 81% | 139 k µm² | −5.8 ns | 0 |
+| `as_sc_mcu7t3v3` | 70% | 79% | 162 k µm² | **0 ns** | 0 |
+| `as_sc_mcu7t3v3` | 75% | 85% | 152 k µm² | **0 ns** | 0 |
+| **`as_sc_mcu7t3v3`** | **80%** | **90%** | **143 k µm²** | **0 ns** | **0** |
+| `as_sc_mcu7t3v3` | 85% | >99% | — | — | DPL fail |
+
+`fd_sc_mcu7t5v0` SS corner is characterised at 3 V but designed for 5 V — the −5.8 ns failure is real. `as_sc_mcu7t3v3` is native 3.3 V and closes all corners. **Selected: AS util80** (`config_as_mcu7t3v3_util80.json`).
+
+| Macro | SCL | Actual util | Die area (×1) | Instances | Die area total | SS timing |
+|---|---|---|---|---|---|---|
+| `sd_decimator_cic_only` ★ | `as_sc_mcu7t3v3` 80% | 90% | **143 k µm²** | 4 | **572 k µm²** | met |
+
+★ Selected config. Flat-top equivalent (4 × ~187 k at FP\_CORE\_UTIL=40): ~748 k µm². **Macro saves ~176 k µm²** in die area with correct SS timing.
 
 #### Grand total (logic + SRAMs, stdcell area basis)
 
@@ -278,12 +292,12 @@ Flat-top equivalent (4 × ~187 k at FP\_CORE\_UTIL=40): ~748 k µm². **Macro sa
 | SRAM macros | ~520 k |
 | **Total logic** | **~2,086 k ≈ 2.09 mm²** |
 | **Realistic die at FP_CORE_UTIL=40** | **~3.8 mm²** (confirmed by job 1127 floorplan) |
-| **Estimated die with hardened CIC macros** | **~3.6 mm²** (−192 k µm² from CIC macro packing) |
+| **Estimated die with hardened AS CIC macros** | **~3.62 mm²** (−176 k µm² from CIC macro packing, correct SS timing) |
 
 #### Changes made in session 3 (2026-06-01):
 - `sc_detector`: NR=2 → NR=1 (single-channel preamble lock), 32→24-bit accumulators, 17→13-bit eval multiplier. 193 k → 164 k (−29 k). SGE job 1138.
 - `training_acc`: 4 shared 8×8 muls → 2 muls, 2 sub-cycles per antenna state (sub0=zi, sub1=zq). 11-cycle sample budget vs ≥20-cycle iq\_valid interval. −21 k in hierarchical context (153 k → 132 k). SGE job 1141.
-- `sd_decimator_cic_only`: hardened as compact standalone macro at FP\_CORE\_UTIL=70 (81% actual utilisation). 139 k µm² die area per instance vs ~187 k flat. **Die area saving: −192 k µm² for ×4** (556 k vs 748 k). DRC=0, TT/FF timing met. SGE jobs 1144–1146. Config: `ol_sd_decimator_cic_only/config_util70.json`.
+- `sd_decimator_cic_only`: hardened as compact standalone macro. Swept `fd_sc_mcu7t5v0` (60/65/70%) and `as_sc_mcu7t3v3` (70/75/80/85%). fd_sc fails SS timing at 3 V (−5.8 ns real, not pessimistic — cells are 5 V designed). **Selected: AS util80** — 143 k µm² per instance, 90% actual util, all corners met, DRC=0. 4 × 143 k = 572 k vs ~748 k flat → **−176 k µm² die area saving** with correct timing. 85% DPL-failed (>99% placement density). SGE jobs 1144–1156. Config: `ol_sd_decimator_cic_only/config_as_mcu7t3v3_util80.json`.
 
 #### Changes made in session 2 (2026-05-31):
 - `energy_meas`: 8 parallel squarers → 1 shared TDM squarer, 9-step FSM. 98 k → 75 k (−23 k). SGE job 1120.
