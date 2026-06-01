@@ -6,6 +6,8 @@
 
 Use the `hpretl/iic-osic-tools:chipathon26` Docker image. LibreLane is at `/foss/tools/bin/librelane` inside the container.
 
+### Standard cells: `gf180mcu_fd_sc_mcu7t5v0` (default)
+
 ```bash
 docker run --rm \
   --user $(id -u):$(id -g) \
@@ -13,6 +15,33 @@ docker run --rm \
   hpretl/iic-osic-tools:chipathon26 \
   --skip bash -c "cd /foss/designs/lora-mimo/rtl-test && librelane --pdk gf180mcuD --scl gf180mcu_fd_sc_mcu7t5v0 <block_dir>/config.json"
 ```
+
+### Native 3.3 V cells: `gf180mcu_as_sc_mcu7t3v3`
+
+The AS cells are not in the container's PDK. A pre-built overlay at
+`/foss/designs/pdk_overlay_as` (NFS-persistent) adds them alongside the
+standard foundry cells. Use `--pdk-root` to point LibreLane at the overlay:
+
+```bash
+librelane --pdk-root /foss/designs/pdk_overlay_as \
+          --pdk gf180mcuD --scl gf180mcu_as_sc_mcu7t3v3 \
+          <block_dir>/config_as_mcu7t3v3.json
+```
+
+Config files that use AS cells must set `LIB` to
+`dir::../../ip/gf180mcu_as_sc_mcu7t3v3/pdk/libs.ref/gf180mcu_as_sc_mcu7t3v3/lib/*.lib`
+and `CTS_CLK_BUFFERS` / `CTS_ROOT_BUFFER` to `gf180mcu_as_sc_mcu7t3v3__buff_*`.
+See `ol_sd_decimator_cic_only/config_as_mcu7t3v3.json` for a working example.
+
+**If the overlay is missing or broken**, rebuild it once via SGE:
+```bash
+hqsub --name rebuild-as-overlay --cpus 1 --mem 1G -- bash -c \
+  "cd /foss/designs/lora-mimo/rtl-test && ./stage_as_scl.sh /foss/designs/pdk_overlay_as"
+```
+
+**Why AS cells?** `fd_sc_mcu7t5v0` is characterised at 3 V (SS corner) but
+designed for 5 V — it fails 32 MHz SS timing across all blocks. AS cells are
+native 3.3 V and close timing correctly. Trade-off: ~16% larger die area.
 
 Replace `<block_dir>` with e.g. `ol_mrc_combiner`, `ol_picorv32`, `ol_sd_decimator`, `ol_nr_outer`.
 
