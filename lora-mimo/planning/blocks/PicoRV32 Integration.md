@@ -567,6 +567,137 @@ For DMEM faults: adjust stack pointer and linker `.data` / `.bss` placement to a
 
 **Hold note:** hold WNS stays negative across the entire sweep because the failing paths are the very short `irq[*] -> first internal flop` input paths, not the long CPU reg-to-reg datapaths. Relaxing the clock period helps setup but has little effect on same-edge hold checks. This is therefore an IRQ interface timing problem, not evidence that the core datapath still needs a lower frequency.
 
+### Wrapper area comparison: `RV32IM` vs `RV32I`
+
+Both variants were run at the same `16 MHz` wrapper target with the same 4 CPU SRAM macros and the same macro-floorplan strategy, so this is a direct core-option comparison rather than a memory/floorplan comparison.
+
+| Variant | Run | Die area (mm^2) | Instance area (um^2) | Stdcell area (um^2) | Setup WNS (ns) | Hold WNS (ns) | Hold violations | Antenna violations | Result |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `RV32IM` | `RUN_2026-05-25_03-20-32` | `2.94` | `2,798,570` | `515,628` | `0` | `0` | `0` | `3` | Clean successful wrapper run |
+| `RV32I` | `RUN_2026-05-25_16-04-58` | `2.74` | `2,603,240` | `438,195` | `0` | `-0.485` | `18` | `0` | Flow completes, but hold-cleanliness regresses |
+
+**Observed delta (`RV32I` relative to `RV32IM`):**
+
+- total instance area improves by about `195,330 um^2` (`-7.0%`)
+- stdcell area improves by about `77,433 um^2` (`-15.0%`)
+- die area improves by about `0.20 mm^2` (`-6.8%`)
+- setup remains clean at `16 MHz`
+- hold degrades from `0` to `-0.485 ns` with `18` violations
+
+**Decision-useful conclusion:** removing MUL/DIV is a real but limited area lever. It helps the wrapper, but it does not remove the fixed CPU SRAM cost and it is not yet a drop-in replacement because the current `RV32I` wrapper run is not hold-clean. This option is worth keeping on the table, but it should be treated as a medium lever, not the main path to a `~2 mm^2` top-level target.
+
+### Wrapper area comparison: `RV32IM` dual-port vs `RV32IM` single-port regfile
+
+This comparison keeps MUL/DIV enabled and changes only `ENABLE_REGS_DUALPORT`, so it isolates the regfile-porting tradeoff.
+
+| Variant | Run | Die area (mm^2) | Instance area (um^2) | Stdcell area (um^2) | Setup WNS (ns) | Hold WNS (ns) | Hold violations | Antenna violations | Result |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `RV32IM` dual-port | `RUN_2026-05-25_03-20-32` | `2.94` | `2,798,570` | `515,628` | `0` | `0` | `0` | `3` | Clean successful wrapper run |
+| `RV32IM` single-port | `RUN_2026-05-25_18-12-37` | `2.86` | `2,721,480` | `490,596` | `0` | `-0.474` | `1` | `4` | Flow completes, but hold regresses slightly |
+
+**Observed delta (`single-port` relative to `dual-port`):**
+
+- total instance area improves by about `77,090 um^2` (`-2.75%`)
+- stdcell area improves by about `25,032 um^2` (`-4.85%`)
+- die area improves by about `0.077 mm^2` (`-2.6%`)
+- setup remains clean at `16 MHz`
+- hold degrades from `0` to `-0.474 ns` with `1` violation
+
+**Decision-useful conclusion:** single-port regfile mode is a smaller lever than removing MUL/DIV. It does save area, but only modestly, and it still introduces a hold-cleanliness regression in the current wrapper flow. This is a minor-to-medium lever, not a decisive area reduction path by itself.
+
+### SRAM macro pin geometry (2026-05-28)
+
+For all `gf180mcu_ocd_ip_sram__sram1024x8m8wm1` macros: **every signal pin is on the bottom edge** of the macro on Metal2 (LEF y=0..3 µm strip). 36 pins total (`A[9:0]`, `CLK`, `CEN`, `GWEN`, `WEN[7:0]`, `D[7:0]`, `Q[7:0]`).
+
+Within the 301.30 µm bottom edge the pins cluster into three bands:
+- x≈7–84 µm: `D/Q/WEN[0..3]` (low byte half)
+- x≈98–197 µm: `CLK, A[9:0], CEN, GWEN` (control + address)
+- x≈214–291 µm: `D/Q/WEN[4..7]` (high byte half)
+
+VDD/VSS are on top-side rings (handled by `PDN_MACRO_CONNECTIONS`). This means **only the `N`/`FS` orientations are practically useful** — pins either face down (N) or up (FS). Side-facing orientations (E/W) require routing all signals around the macro footprint.
+
+### Placement-topology sweep (2026-05-28)
+
+Six 4-macro arrangements were tried on top of the baseline P&R config. Results:
+
+| Variant | Layout | Result | Failure |
+| --- | --- | --- | --- |
+| baseline 2×2 | all N, 2-row 2-col | clean | — |
+| `bottom_row` | 4×1 all N, tight 5.9 µm gap | fail | DRT-0073 clkbuf_8 (halos overlap) |
+| `row1x4` | 4×1 all N, 60 µm gaps | clean (+19 ns slack) | — |
+| `b23_flipped` | 2×2, b2/b3 FS pins-up | fail | DRT-1231/0073 clkbuf_12 |
+| `cpu_middle` | 2×2 split rows, CPU between, b2/b3 FS | fail | DRT-0073 clkbuf_12+16 |
+| `col4x1` (W) | 4×1 column at x=50, W orientation (pins right) | fail | DRT-1231 clkbuf_regs_0_clk_32m/Z |
+| `col4x1_e` | 4×1 column at x=860, E orientation (pins left, macros on right of die) | routes clean; **hold fail at TT** | post-flow `Hold violations found in nom_tt_025C_3v30` |
+
+**Macros oriented FS or W (placed left side of die) consistently break the detailed router.** Root cause: with FS or W orientation and macros packed near one die edge, the macro CLK pin ends up adjacent to a tight std-cell strip; CTS lands a clkbuf in that strip; detailed router can't reach the buffer's input pin through the constrained Metal2 access tracks.
+
+**E orientation with macros on the *opposite* die edge (col4x1_e) routes cleanly** — the std-cell strip is now spacious because it occupies most of the die. But this variant has hold-time violations at TT corner that the current `HOLD_VIOLATION_CORNERS=""` setting does not fix. Adding `nom_tt_025C_3v30` to `HOLD_VIOLATION_CORNERS` is expected to close it; not yet tested.
+
+**Practical implication:** keep all 4 macros in N orientation by default. `row1x4`, baseline `2×2`, and `col4x1_e` (with hold-fix enabled) are the routable layouts found. Of these, baseline `2×2` has the best setup slack (+22 vs +19 vs +19.4 ns) and is the proven configuration.
+
+### Synthesis/PD area-knob sweep (2026-05-28, baseline 2×2 placement)
+
+All variants use the same RTL, same macro placement (baseline), same `CLOCK_PERIOD=62.5 ns` (16 MHz), and corner set `[tt 25C 3v3, ss 125C 3v0, ff -40C 3v6]`. Only the listed knobs change.
+
+| Variant | SYNTH | util/dens | fanout | GRT buf | CTS root | Die (mm²) | Slack SS (ns) | Result |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| baseline (RUN_2026-05-26_11-09-06) | DELAY 0 | 35/42 | 8 | 100 | clkbuf_16 | 3.06 | +22.78 | clean (reference) |
+| `area_t1` (Tier 1) | **AREA 0** | **50/60** | 8 | 100 | clkbuf_16 | **2.02** | +0.95 | clean — **31% die area** |
+| `area_t12` (Tier 1+2 smaller bufs) | AREA 0 | 50/60 | 16 | 30 | **clkbuf_12** | — | — | fail DRT-0073 clkbuf_4 |
+| `area_t12b` (Tier 1+2, larger bufs) | AREA 0 | 50/60 | 16 | 30 | clkbuf_16 | 2.02 | +0.95 | clean — **bit-identical to t1** |
+| `area_mpw` (drop SS, push) | AREA 0 | **60/70** | 32 | 0 | clkbuf_16 | — | — | fail DRT-0073 clkbuf_12 |
+
+**Findings:**
+
+1. **`SYNTH_STRATEGY: "AREA 0"` is the dominant lever.** It alone (with util 50/density 60) gives the 31% area win. Tier 2 buffer/fanout knobs produce bit-identical metrics — confirming that with AREA-0 synthesis, fanout-8 was never binding and the repair stage never used >30% of its buffer budget.
+2. **Density above ~60% breaks detailed routing.** Every variant pushing util≥60 or density≥70 hits `DRT-0073` (no access point) on a clock buffer. The trap fires regardless of which CTS buffer cell is used (clkbuf_4, clkbuf_8, clkbuf_12, clkbuf_16 have all been observed failing). The wall is **routability, not timing**.
+3. **Dropping SS corner (mpw variant) does not help if density is also raised** — the failure is access-point geometry, not timing slack.
+4. **Critical-path shape changes drastically under AREA 0.** Baseline DELAY-0 path: 10 levels of fat AOI/OAI/NAND/NOR through `aoi222`+`nand3`+`nand4`+`oai21` with a 5-buffer slew-repair chain at the start (high-fanout repair). AREA-0 path: **22+ levels of 4-input gates** (`and4`, `nand4`, `nor4`) with no slew-repair buffers and 1–2 fanout per stage. Both paths are CPU-internal — neither touches the SRAM macros, confirming the design is logic-depth bound, not memory-pin bound.
+
+### Lab-test voltage strategy (MPW signoff considerations)
+
+The stdcell library is `gf180mcu_fd_sc_mcu7t5v0` — the 5V silicon-rated variant, currently signed off at 3.0/3.3/3.6 V (SS/TT/FF). For an MPW characterization chip:
+
+- **Cells are silicon-rated to ~5.5 V.** Lab-bumping VDD to 3.6 V is fully covered by FF.lib characterization; 4.0 V is uncharacterized but well within process spec.
+- **2× speedup typical from 3.3 → 4.0 V** at 180 nm (well-known for older planar CMOS).
+- **Cost: +19% dynamic power at 3.6 V, +47% at 4.0 V.** Bench supplies handle this; PDN IR-drop margin should be re-checked at higher I.
+- **Reliability:** TDDB over years matters for shipping product; over MPW-test weeks it is negligible.
+
+Strategy for area: drop SS from signoff (corners `[TT, FF]` only), allowing lab-bumping to compensate if silicon comes back slow. **But** this does not change the DRT-0073 routability floor — the access-point wall is a layout/router limit, not a timing limit. The `area_t1` configuration appears to be the practical area floor for this design + PDK + library + standard PDN settings.
+
+### SRAM density: OCD vs FD compilers
+
+For the chipathon shuttle, two SRAM compilers are available:
+
+| Compiler | Macro | Bits | Area (mm²) | Density (Kb/mm²) | Silicon-proven |
+| --- | --- | --- | --- | --- | --- |
+| `gf180mcu_fd_ip_sram__` (FD = foundry default) | `sram64x8` | 512 | 0.101 | 5.1 | ✓ yes |
+| FD | `sram128x8` | 1,024 | 0.116 | 8.8 | ✓ yes |
+| FD | `sram512x8` | 4,096 | 0.209 | 19.6 | ✓ yes (used by DSP/frontend buffer) |
+| `gf180mcu_ocd_ip_sram__` (OCD = OnChip Designs, third party) | `sram256x8` | 2,048 | 0.068 | 30.2 | ✗ not in qualified IP list |
+| OCD | `sram1024x8` | 8,192 | 0.155 | **52.7** | ✗ — used by PicoRV32 RAM |
+
+OCD is **2.7× denser** than FD at comparable depths, but FD is silicon-proven on this PDK. For tapeout safety, the conservative move is to switch the PicoRV32 unified 4 KB RAM to FD `sram512x8 × 8` (1.67 mm² for memory alone vs current 0.62 mm²) or accept smaller RAM (`4× sram512x8` = 2 KB at 0.84 mm²) if firmware fits. Track this against the `~2 mm²` top-level target.
+
+### Tier-classification of area levers (PicoRV32 wrapper, 16 MHz, GF180MCU 3.3 V)
+
+From most to least impactful, with measured deltas where available:
+
+| Tier | Lever | Effect | Measured | Risk |
+| --- | --- | --- | --- | --- |
+| 1 | `SYNTH_STRATEGY: AREA 0` + util 50 + density 60 | core area reduction via shallower mapping + tighter packing | **−31% die area** vs baseline | none — clean STA at SS |
+| 1 | Drop SS corner signoff | enables further density push only if router allows | not realized — DRT wall hit | MPW-only, lab needs adjustable VDD |
+| 2 | Halo shrink (macro 10→5, PDN 5→3) | does NOT reduce die area (util determines die); gives router more room near pins | **+4.3 ns slack recovered** (0.95 → 5.22 ns) at same 2.02 mm² | low (PDN-to-macro DRC) |
+| 3 | RV32IM → RV32I (disable MUL/DIV) | drops `pcpi_mul` block | **−7.0% instance area, −15.0% stdcell** | hold-cleanliness regression |
+| 3 | Single-port regfile | halves regfile flops | **−2.75% instance area** | minor hold regression |
+| 3 | Disable ENABLE_IRQ | trims IRQ state machine | not measured | firmware loses interrupts |
+| — | Tier 2 buffer/fanout knobs | `MAX_FANOUT 16`, smaller CTS root, `GRT_RESIZER 30` | **no effect** vs Tier 1 alone | none |
+| — | Macro orientation flips (FS, W, E) | none — fails detailed routing | DRT-0073/1231 | layout-only failures |
+| — | OCD → FD SRAM | silicon-proven RAM | **+1.05 mm² memory area** | drops 2.7× density |
+
+**Current best:** `area_t1` config — 2.02 mm² die, +0.95 ns SS slack at 16 MHz. Beyond this, only RTL changes (Tier 3) or library swaps move the needle, both with cost.
+
 ---
 
 ## Verification

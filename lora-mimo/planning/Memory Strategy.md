@@ -44,6 +44,85 @@ Linker/runtime rule:
 
 Both simulations must be run at slow-slow corner, 3.3 V supply, and −40 °C (cold Vth worst case for CMOS). Also run at +85 °C to bound the full operating envelope. Results determine whether 2-cycle or 3-cycle paths are needed, and whether the 32 MHz clock target can be held.
 
+### OCD Liberty timing model is unverified — STA is signing off against FD numbers (2026-05-28 finding)
+
+The investigation of the post-PnR STA reports for the PicoRV32 wrapper exposed a sharper problem than "spec sheets are identical." The Liberty (`.lib`) files themselves — the actual numerical tables OpenSTA reads during sign-off — share the same property:
+
+**Direct `.lib` comparison (TT 025C 3v30 corner, both libs):**
+
+| Field | `gf180mcu_fd_ip_sram__sram512x8m8wm1__tt_025C_3v30.lib` | `gf180mcu_ocd_ip_sram__sram1024x8m8wm1__tt_025C_3v30.lib` |
+|---|---|---|
+| `cell_rise(q_delay_template)` first row (Q[0] from CLK) | `6.9234, 6.95652, 7.03452, 7.17396, 7.3776, 7.65684, 8.0352` | **identical** |
+| `cell_fall(q_delay_template)` first row | `7.17732, 7.20636, 7.2762, 7.3968, ...` | **identical** |
+| `rise_transition(q_slew_template)` | `0.227676, 0.266148, 0.399252, 0.646284, 1.03256, ...` | **identical** |
+| Reported `area` field | `209400.2768` | `209400.2768` ← **FD's area, not OCD's actual 155,415 µm²** |
+| Header technology field | `GF 180nm 5V Green` | `GF 180nm 3.3V` |
+| Library copyright | `GlobalFoundries PDK Authors` | `Open Circuit Design, LLC` — `3.3V SRAM based on the GlobalFoundries PDK Authors 5V SRAM` |
+| Lines that differ from FD lib | (baseline) | **only 20 lines** — copyright header + address-bus width (10 vs 9) |
+
+OCD took the FD `.lib`, changed only the copyright header, the `bit_width`/`bit_from` of the address bus, and a handful of identifiers, then shipped it. **All numerical timing arcs, setup/hold tables, slew tables, and the reported area are FD-512×8's values.** When OpenSTA reports +0.95 ns SS slack on a PicoRV32 path that touches the OCD memory, it is computing that slack using the FD-512×8 5 V cell model — not OCD's actual 3.3 V 1024-deep bit-cell.
+
+**What this means for tapeout:**
+
+1. **STA results for OCD memory paths are not silicon-predictive.** The +22.8 ns (DELAY 0) and +0.95 ns (AREA 0) slack figures quoted across the PD experiments are based on FD timing applied to an OCD layout. Actual OCD silicon could be faster (smaller bit-cell parasitic) or slower (1024 depth → longer bit-line, taller cell → longer wordline), but the `.lib` cannot tell us which.
+2. **Power estimates are also wrong.** OCD's true switched capacitance differs from FD's. Dynamic-power numbers from the `.lib` underestimate or overestimate by an unknown factor.
+3. **Floorplan area accounting is internally inconsistent.** The LEF gives OCD's real outline (155 k µm²), but the `.lib` says 209 k µm². OpenROAD uses the LEF for placement bounds but tools that consume `.lib` area (some power flows, some macro reports) see the FD number.
+4. **This is in addition to the 3.3 V derating gap for the FD macro itself.** Even FD is only characterised at 4.5/5.5 V — the FD-512×8 numbers OCD is borrowing are not 3.3 V numbers either. So the OCD memory in the PicoRV32 critical path is timed using **FD numbers extrapolated from 5 V silicon, applied to a different layout, simulated at the wrong voltage**.
+
+### Mandatory characterisation plan
+
+Before tapeout we must produce honest characterisation data for both macros at the actual operating point (3.3 V, full corner sweep). Two paths in parallel:
+
+**Path A — Parasitic-extracted SPICE simulation (in-flow, fast)**
+
+Owner: TBD. Blocking for SDC sign-off.
+
+Scaffolding lives at [`characterization/`](../characterization/README.md) (added 2026-05-28) with parallel flows for both macro families:
+
+- [`characterization/sram_ocd/`](../characterization/sram_ocd/README.md) — OCD 1024×8 (PicoRV32 RAM)
+- [`characterization/sram_fd/`](../characterization/sram_fd/README.md) — FD 512×8 (Frontend Buffer; also fallback candidate for PicoRV32)
+
+Both flows have identical staging:
+
+- **S0** — schematic-level SPICE on the existing `gf180mcu_ocd_ip_sram__sram1024x8m8wm1.spice` netlist at TT 3.3 V, compare measured `CLK ↑ → Q[0]` delay to the value in the shipped `.lib`. If they don't match, the `.lib` is fictional and we know it immediately. Run: `characterization/sram_ocd/run_schematic_sim.sh tt_025C_3v30`.
+- **S1** — same testbench, full PVT corner sweep (5 shipped-lib corners + 4 lab-boost / uncharacterised corners from `corners.csv`).
+- **S2** — parasitic extraction via `magic ext2spice -p` + rerun SPICE. This is the heavy step; expected hours per extraction and several GB on disk for `extfiles_parasitic/`. Script: `characterization/sram_ocd/extract_parasitics.sh`.
+- **S3** — full corner sweep on the extracted netlist; regenerate `.lib`.
+
+Each `S*` stage produces JSON measurement files in `characterization/sram_ocd/results/`. `compare_to_lib.py` produces the diff table for the planning doc.
+
+For each macro variant in use (`fd_ip_sram__sram512x8m8wm1`, `ocd_ip_sram__sram1024x8m8wm1`):
+1. Extract layout parasitics from the macro GDS using Magic/ngspice (`magic -dnull -noconsole < extract.tcl`).
+2. Run SPICE simulation on the key timing arcs:
+   - `CLK ↑ → Q[0]` clock-to-output delay (rise/fall), with output load swept 10–100 fF
+   - `A[*]/D[*]/WEN[*]` setup time relative to `CLK ↑`
+   - `A[*]/D[*]/WEN[*]` hold time relative to `CLK ↑`
+   - Minimum pulse widths on `CLK`
+3. Sweep PVT corners (see `characterization/sram_ocd/corners.csv`):
+   - **TT 25 °C 3.30 V** (typical, target operating point)
+   - **SS 125 °C 3.00 V** (slowest — hot Vth + voltage droop)
+   - **SS −40 °C 3.30 V** (cold Vth, additional check — CMOS Vth rises at cold)
+   - **FF −40 °C 3.60 V** (fastest — for hold timing closure)
+   - **TT 25 °C 3.60 V / 4.00 V** (lab-boost envelope, uncharacterised but needed for MPW testing)
+4. Output corrected Liberty tables; replace the existing `.lib` numerical entries with measured values. Re-run full LibreLane PnR with the corrected libs.
+
+**Path B — Silicon characterisation post-tapeout (validation, slow)**
+
+Owner: bench-test team. Validates Path A on actual silicon.
+
+1. Add CLK-stress test mode to PicoRV32 firmware: sustained pseudo-random read/write loops on a fixed address range with deterministic data patterns.
+2. Lab sweep: VDD = 3.0 / 3.3 / 3.6 / 4.0 V × temperature = 25 °C / 85 °C (chamber if available).
+3. For each (V, T) point, sweep input clock frequency from 16 MHz upward until first read mismatch. Report shmoo plot.
+4. Compare measured frequency-margin to Path A's predicted margin. Any silicon point worse than Path A says corrected `.lib` is still optimistic — apply additional derate before any subsequent tapeout.
+
+**Path C — Conservative interim sign-off (the now-decision)**
+
+Until Path A produces corrected libs:
+- Apply a **2× derate margin** to all timing arcs touching the OCD memory in PnR sign-off (i.e., require +2× the nominal slack on any path that crosses an OCD SRAM pin). Concretely: for the current `area_t1` config showing +0.95 ns slack at SS, that path is **not** signed off — we need at least the OCD-untouched paths to dominate the slack budget.
+- Or: switch the PicoRV32 unified RAM to FD-only (8 × `sram512x8` for 4 kB) — the FD `.lib` is still 5 V-derived but at least it matches the FD layout, and we have an explicit derate plan from 5 V to 3.3 V via Path A.
+
+**Decision pending:** weigh OCD area savings (0.62 mm²) vs FD area cost (1.67 mm²) and the **risk** of taping out 4 macros on uncharacterised timing.
+
 ---
 
 ### Core voltage decision — 3.3 V
