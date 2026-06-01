@@ -102,7 +102,7 @@ def run_trial(iq_ref: np.ndarray, onset: int, truth: list[int],
 
     # Training accumulator over the known 8-symbol preamble window
     Z_j, _, E_ref = training_accumulate(rx_j, onset, onset, M, ref_sel=0)
-    w = compute_weights(Z_j, mode='mrc', E_ref=E_ref)
+    w = compute_weights(Z_j, mode='mrc', sf=SF, E_ref=E_ref)
 
     # Payload decode
     pay_s = onset + (N_PREAMBLE + N_SYNC_SKIP) * M

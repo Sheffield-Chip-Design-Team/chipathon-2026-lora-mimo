@@ -74,11 +74,13 @@ def _jakes(N: int, f_D: float, f_s: float, N_osc: int = 12) -> np.ndarray:
 def _train_weights(rx_preamble: np.ndarray, M: int, preamble_len: int,
                    sc_hit_syms: int = 2, mode: str = "mrc") -> np.ndarray:
     """Run training_accumulate + compute_weights; SC fires after sc_hit_syms."""
+    import math
+    sf = int(round(math.log2(M)))
     sc_lock  = sc_hit_syms * M
     timing   = 0
     Z, _, E  = training_accumulate(rx_preamble, sc_lock, timing, M,
                                    preamble_len=preamble_len)
-    return compute_weights(Z, mode=mode, E_ref=E)
+    return compute_weights(Z, mode=mode, sf=sf, E_ref=E)
 
 
 def _branch_ladder_gains(NR: int, step_db: float) -> np.ndarray:
@@ -202,8 +204,8 @@ def _compare_shift_mrc_packet(
         preamble_len=preamble_len,
     )
 
-    w_exact = compute_exact_mrc_weights(Z, E_ref=E_ref)
-    w_shift = compute_weights(Z, mode="mrc", E_ref=E_ref)
+    w_exact = compute_exact_mrc_weights(Z, sf=SF, E_ref=E_ref)
+    w_shift = compute_weights(Z, mode="mrc", sf=SF, E_ref=E_ref)
     Z_z = Z.copy()
     best = int(np.argmax(np.abs(Z_z)))
     w_sc = np.zeros(NR, dtype=complex)
@@ -605,8 +607,8 @@ def _compare_shift_mrc_packet(
         preamble_len=preamble_len,
     )
 
-    w_exact = compute_exact_mrc_weights(Z, E_ref=E_ref)
-    w_shift = compute_weights(Z, mode="mrc", E_ref=E_ref)
+    w_exact = compute_exact_mrc_weights(Z, sf=SF, E_ref=E_ref)
+    w_shift = compute_weights(Z, mode="mrc", sf=SF, E_ref=E_ref)
     Z_z = Z.copy()
     best = int(np.argmax(np.abs(Z_z)))
     w_sc = np.zeros(NR, dtype=complex)

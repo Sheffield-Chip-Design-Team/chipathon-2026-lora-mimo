@@ -151,6 +151,7 @@ def apply_calibration(
 def compute_weights(
     Z_j: np.ndarray,
     mode: str = "mrc",
+    sf: int = 7,
     antenna_en: int = 0xF,
     cal_j: np.ndarray | None = None,
     E_ref: float | None = None,
@@ -159,12 +160,13 @@ def compute_weights(
     Compute combining weights from training accumulator output.
 
     Delegates to WeightGenerator which models the full hardware FSM:
-    SHIFT (int64→int32) → CALIBRATE → COMPUTE → SCALE (Q1.15).
+    SHIFT (Z>>>sf → 18-bit H) → CALIBRATE → COMPUTE → SCALE (Q1.15).
 
     Parameters
     ----------
     Z_j       : (NR,) complex cross-correlation estimates from training_accumulate()
     mode      : 'mrc' | 'egc' | 'sc' | 'bypass'
+    sf        : spreading factor (6–12). Passed to the SHIFT state. Default 7.
     antenna_en: bitmask of enabled antennas (bit 0 = antenna 0)
     cal_j     : (NR,) complex Q1.15 calibration coefficients, or None
     E_ref     : retained for API compatibility and exact-MRC comparisons;
@@ -175,7 +177,7 @@ def compute_weights(
     w : (NR,) complex Q1.15 weights
     """
     wgen = WeightGenerator(mode=mode, antenna_en=antenna_en, cal_j=cal_j)
-    w, _ = wgen.process(Z_j, E_ref=E_ref)
+    w, _ = wgen.process(Z_j, sf=sf, E_ref=E_ref)
     return w
 
 
