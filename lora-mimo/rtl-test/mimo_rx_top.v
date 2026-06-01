@@ -480,6 +480,8 @@ module mimo_rx_top (
     wire signed [7:0] rpl_q [0:3];
     wire              rpl_valid;
     wire              psram_buf_active, psram_replay_active_w;
+    wire              psram_qe_init_done, psram_replay_missed, psram_overflow;
+    wire [2:0]        psram_state_dbg;
 
     psram_buf_ctrl u_psram (
         .clk_32m      (clk),
@@ -508,10 +510,10 @@ module mimo_rx_top (
         .rpl_valid    (rpl_valid),
         .buf_active   (psram_buf_active),
         .replay_active(psram_replay_active_w),
-        .qe_init_done (),
-        .replay_missed(),
-        .overflow     (),
-        .state_dbg    ()
+        .qe_init_done (psram_qe_init_done),
+        .replay_missed(psram_replay_missed),
+        .overflow     (psram_overflow),
+        .state_dbg    (psram_state_dbg)
     );
 
     // Combiner input mux: live decimator IQ during normal/buffering,
@@ -675,7 +677,12 @@ module mimo_rx_top (
         .sigma2_valid        (sigma2_valid),
         .sigma2_hw_0 (sigma2_hw[0]), .sigma2_hw_1 (sigma2_hw[1]),
         .sigma2_hw_2 (sigma2_hw[2]), .sigma2_hw_3 (sigma2_hw[3]),
-        .psram_status_rb  (8'd0),
+        // PSRAM status → reg_bank 0xB1:
+        //   [2:0]=state_dbg [3]=qe_init_done [4]=replay_active
+        //   [5]=replay_missed [6]=overflow [7]=buf_active
+        .psram_status_rb  ({psram_buf_active, psram_overflow,
+                            psram_replay_missed, psram_replay_active_w,
+                            psram_qe_init_done, psram_state_dbg}),
         .psram_pkt_bytes  (16'd0),
         .psram_rd_offset  (8'd0),
         // Hardware control outputs
