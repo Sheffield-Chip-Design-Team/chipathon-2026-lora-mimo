@@ -120,7 +120,7 @@ def simulate_packet(N0: float, bits: int, rng: np.random.Generator):
         return None
 
     # --- Compute MRC weights ---
-    w = compute_weights(Z_j, mode="mrc", E_ref=E_ref)
+    w = compute_weights(Z_j, mode="mrc", sf=SF, E_ref=E_ref)
 
     # --- Combine quantized payload ---
     payload_start = N_PREAMBLE * M

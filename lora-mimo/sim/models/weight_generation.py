@@ -6,10 +6,13 @@ Corresponds to planning/blocks/Weight Generation.md.
 Hardware FSM state sequence:
     IDLE → SHIFT → CALIBRATE → COMPUTE → SCALE → WRITE → IDLE
 
-The SHIFT state applies the same common right shift used by the RTL: the
-largest I/Q component is brought into the signed Q1.15-friendly range before
-calibration. Hardware MRC then preserves branch ratios with a conservative
-power-of-two scale rather than an exact reciprocal/divide.
+The SHIFT state applies an SF-normalised right-shift: Z is right-shifted by sf
+bits before latching into the 18-bit H register. This is the RTL behaviour
+introduced in commit 034f2f6 (weight_gen area opt). K is always 0 in the RTL;
+shift_normalise() returns sf as K for diagnostic use by callers.
+
+mrc_norm_shift follows the 3-level RTL logic keyed on bits 17 and 16 of the
+18-bit peak_abs value (after calibration).
 """
 
 import numpy as np
@@ -94,11 +97,17 @@ class NoiseFloorEstimator:
 
 
 def _norm_shift_from_peak(peak: float) -> int:
-    """RTL-compatible shift: keep the peak signed component below 2^15."""
+    """RTL mrc_norm_shift: 3-level keyed on bits 17 and 16 of 18-bit peak_abs.
+
+    Matches weight_gen.v:
+        peak_abs[17] ? 2 : peak_abs[16] ? 1 : 0
+    """
     peak_i = int(abs(round(float(peak))))
-    if peak_i <= 0x7FFF:
-        return 0
-    return max(0, int(np.floor(np.log2(float(peak_i)))) - 14)
+    if peak_i >= (1 << 17):  # bit 17 set (≥ 131072)
+        return 2
+    if peak_i >= (1 << 16):  # bit 16 set (≥ 65536)
+        return 1
+    return 0
 
 
 def _branch_headroom(mask: np.ndarray) -> int:
@@ -122,27 +131,27 @@ def _round_ashr(v: float, sh: int) -> int:
     return (vi + bias) >> sh
 
 
-def shift_normalise(Z_j: np.ndarray) -> tuple[np.ndarray, int]:
+def shift_normalise(Z_j: np.ndarray, sf: int = 7) -> tuple[np.ndarray, int]:
     """
-    SHIFT state: reduce Z_j to the signed Q1.15-friendly range via common K.
+    SHIFT state: SF-normalised right-shift matching weight_gen.v ST_IDLE latch.
 
-    K is selected from the largest absolute I/Q component across all branches.
-    The same shift is applied to every branch, preserving relative magnitudes
-    and phases before calibration.
+    RTL behaviour (commit 034f2f6): H = (Z >>> sf)[17:0].  The shift is the
+    spreading-factor value (6–12), not a peak-derived K.  K is always 0 inside
+    the RTL but returned here as sf for callers that use it for E_ref scaling.
+
+    The arithmetic right-shift is modelled as floor(component / 2^sf), which
+    matches Python's integer >> operator and the Verilog >>> operator for both
+    positive and negative values.
 
     Returns
     -------
-    H_j : (NR,) complex, shifted channel estimates
-    K   : int, bits shifted (0 if already in range)
+    H_j : (NR,) complex, sf-shifted channel estimates (float arithmetic)
+    K   : int, sf (bits shifted; always == sf regardless of amplitude)
     """
-    max_component = float(max(
-        np.max(np.abs(Z_j.real)),
-        np.max(np.abs(Z_j.imag)),
-    ))
-    if max_component == 0.0:
-        return np.zeros_like(Z_j, dtype=complex), 0
-    K = _norm_shift_from_peak(max_component)
-    return (Z_j / (2 ** K)).astype(complex), K
+    scale = float(1 << sf)
+    H_re = np.floor(Z_j.real / scale)
+    H_im = np.floor(Z_j.imag / scale)
+    return (H_re + 1j * H_im).astype(complex), sf
 
 
 def apply_calibration(H_j: np.ndarray, cal_j: np.ndarray | None) -> np.ndarray:
@@ -256,22 +265,24 @@ class WeightGenerator:
         self.antenna_en = antenna_en
         self.cal_j = cal_j
 
-    def process(self, Z_j: np.ndarray, E_ref: float | None = None) -> tuple[np.ndarray, int]:
+    def process(self, Z_j: np.ndarray, sf: int = 7, E_ref: float | None = None) -> tuple[np.ndarray, int]:
         """
         Run the full FSM from Z_j to Q1.15 weights.
 
         Parameters
         ----------
         Z_j   : (NR,) complex channel estimates from training_accumulate()
+        sf    : spreading factor (6–12). Used by the SHIFT state to right-shift
+                Z by sf bits before calibration. Matches weight_gen.v sf input.
         E_ref : retained for API compatibility. Hardware MRC ignores it because
-                normalization is a conservative shared shift, not an exact divide.
+                normalization is an SF-based shift, not an exact divide.
 
         Returns
         -------
         w : (NR,) complex Q1.15 weights
-        K : common shift applied in the SHIFT state (diagnostic)
+        K : sf (bits shifted in the SHIFT state; diagnostic)
         """
-        H_j, K = shift_normalise(Z_j)
+        H_j, K = shift_normalise(Z_j, sf=sf)
         H_j_cal = apply_calibration(H_j, self.cal_j)
         w = compute_weights_hw(H_j_cal, mode=self.mode, antenna_en=self.antenna_en,
                                E_ref_H=None)
@@ -280,6 +291,7 @@ class WeightGenerator:
 
 def compute_exact_mrc_weights(
     Z_j: np.ndarray,
+    sf: int = 7,
     antenna_en: int = 0xF,
     cal_j: np.ndarray | None = None,
     E_ref: float | None = None,
@@ -291,7 +303,7 @@ def compute_exact_mrc_weights(
     that can afford division: w_j = conj(H_j) * E_ref_H / Σ|H_k|² when E_ref is
     provided, otherwise w_j = conj(H_j) / Σ|H_k|².
     """
-    H_j, K = shift_normalise(Z_j)
+    H_j, K = shift_normalise(Z_j, sf=sf)
     H = apply_calibration(H_j, cal_j)
     NR = len(H)
     mask = np.array([(antenna_en >> j) & 1 for j in range(NR)], dtype=bool)

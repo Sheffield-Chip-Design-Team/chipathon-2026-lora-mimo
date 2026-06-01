@@ -139,6 +139,7 @@ class MRCWeightBlock(gr.sync_block):
         )
         self.NR = NR
         self.M = M
+        self.sf = int(round(np.log2(M)))
         self.preamble_len = preamble_len
         self.ref_sel = ref_sel
         self.mode = mode
@@ -248,7 +249,7 @@ class MRCWeightBlock(gr.sync_block):
                 preamble_len=self.preamble_len,
             )
             wgen = WeightGenerator(mode=self.mode)
-            w, _ = wgen.process(Z_j, E_ref=E_ref)
+            w, _ = wgen.process(Z_j, sf=self.sf, E_ref=E_ref)
             # Divide by sat_scale to match oracle weight normalisation
             self._w = (w / self.sat_scale).astype(np.complex64)
             self._trained = True

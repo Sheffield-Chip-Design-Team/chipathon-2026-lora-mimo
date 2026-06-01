@@ -164,7 +164,7 @@ def simulate_full_chain(SF: int, NR: int, snr_db_bb: float, ratio: int,
                                       preamble_len=preamble_len)
 
     # ---- Weight generator (Q1.15 MRC) -------------------------------------
-    w = compute_weights(Z, mode="mrc", E_ref=E_ref)
+    w = compute_weights(Z, mode="mrc", sf=SF, E_ref=E_ref)
 
     # ---- MRC combine + demodulate -----------------------------------------
     if use_rtl_int8:
@@ -200,7 +200,7 @@ def simulate_bb_reference(SF: int, NR: int, snr_db: float,
     Z, _, E_ref = training_accumulate(rx_preamble, sc_lock_sample=0,
                                       timing_ref=0, M=M,
                                       preamble_len=preamble_len)
-    w  = compute_weights(Z, mode="mrc", E_ref=E_ref)
+    w  = compute_weights(Z, mode="mrc", sf=SF, E_ref=E_ref)
     y  = nonfft_combine(rx_payload, w)
     return b_tx, demodulate(y)
 
