@@ -122,6 +122,12 @@ Three paths to resolve the depth vs precision tradeoff:
 
 ### Optional CPU SRAM borrow mode
 
+> **DEPRECATED — DO NOT IMPLEMENT**
+>
+> The block-based fixed-L=256 SC buffer fits in one 512×8 SRAM macro for all SFs.
+> CPU memory sharing with the frontend buffer is not needed and must not be implemented.
+> `CPU_SRAM_BORROW_EN`, `CPU_SRAM_SHARED_BORROW_EN`, and all borrow-path logic are removed.
+
 If additional delayed-sample depth is needed without adding more dedicated frontend SRAM macros, the controller may optionally borrow a reserved upper CPU SRAM window:
 
 - `CPU_SRAM_BORROW_EN=0`: baseline implementation, dedicated frontend SRAM only

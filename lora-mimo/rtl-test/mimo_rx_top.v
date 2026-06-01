@@ -29,6 +29,13 @@ module mimo_rx_top (
     output wire        REMOD_A_I,
     output wire        REMOD_A_Q,
 
+    // ---- PSRAM QPI (shared with JTAG pads at padframe level) ----
+    output wire        PSRAM_SCK_EN,  // gates 32 MHz to PSRAM CLK
+    output wire        PSRAM_CE_N,
+    output wire [3:0]  PSRAM_SIO_OUT,
+    input  wire [3:0]  PSRAM_SIO_IN,
+    output wire [3:0]  PSRAM_SIO_OE,
+
     // ---- Shared SPI bus (host ↔ ASIC ↔ SX1257) ----
     input  wire        HOST_CS,      // active-low, RPi SPI0 CS1
     input  wire        SPI_SCK,      // bidirectional: host drives in / ASIC drives out
@@ -56,6 +63,12 @@ module mimo_rx_top (
     always @(posedge clk or negedge rst_n)
         if (!rst_n) sample_count <= 32'd0;
         else        sample_count <= sample_count + 32'd1;
+
+    // iq_valid-based sample counter — matches timing_ref domain from sc_detector
+    reg [31:0] iq_samp_cnt;
+    always @(posedge clk or negedge rst_n)
+        if (!rst_n) iq_samp_cnt <= 32'd0;
+        else if (dcr_valid) iq_samp_cnt <= iq_samp_cnt + 32'd1;
 
     // =========================================================================
     // Register bank outputs (config forwarded to DSP blocks)
@@ -461,6 +474,59 @@ module mimo_rx_top (
     );
 
     // =========================================================================
+    // Stage 7b: PSRAM Buffer Controller (same-packet MRC)
+    // =========================================================================
+    wire signed [7:0] rpl_i [0:3];
+    wire signed [7:0] rpl_q [0:3];
+    wire              rpl_valid;
+    wire              psram_buf_active, psram_replay_active_w;
+
+    psram_buf_ctrl u_psram (
+        .clk_32m      (clk),
+        .rst_n        (rst_n),
+        .psram_en     (rb_psram_ctrl[0]),
+        .init_start   (rb_psram_ctrl[2]),  // firmware strobes bit[2] after tPU
+        .iq_i0 (dcr_i[0]), .iq_i1 (dcr_i[1]),
+        .iq_i2 (dcr_i[2]), .iq_i3 (dcr_i[3]),
+        .iq_q0 (dcr_q[0]), .iq_q1 (dcr_q[1]),
+        .iq_q2 (dcr_q[2]), .iq_q3 (dcr_q[3]),
+        .iq_valid     (dcr_valid),
+        .sc_lock      (sc_lock),
+        .timing_ref   (timing_ref),
+        .iq_sample_cnt(iq_samp_cnt),
+        .W_commit     (W_commit_hw),
+        .packet_end   (packet_done_pulse),
+        .sck_en       (PSRAM_SCK_EN),
+        .ce_n         (PSRAM_CE_N),
+        .sio_out      (PSRAM_SIO_OUT),
+        .sio_in       (PSRAM_SIO_IN),
+        .sio_oe       (PSRAM_SIO_OE),
+        .rpl_i0 (rpl_i[0]), .rpl_i1 (rpl_i[1]),
+        .rpl_i2 (rpl_i[2]), .rpl_i3 (rpl_i[3]),
+        .rpl_q0 (rpl_q[0]), .rpl_q1 (rpl_q[1]),
+        .rpl_q2 (rpl_q[2]), .rpl_q3 (rpl_q[3]),
+        .rpl_valid    (rpl_valid),
+        .buf_active   (psram_buf_active),
+        .replay_active(psram_replay_active_w),
+        .qe_init_done (),
+        .replay_missed(),
+        .overflow     (),
+        .state_dbg    ()
+    );
+
+    // Combiner input mux: live decimator IQ during normal/buffering,
+    // PSRAM replay IQ during replay. x_valid follows the active source.
+    wire signed [7:0] comb_xi [0:3];
+    wire signed [7:0] comb_xq [0:3];
+    wire              comb_xvalid;
+    genvar gi;
+    generate for (gi = 0; gi < 4; gi = gi + 1) begin : g_comb_mux
+        assign comb_xi[gi] = psram_replay_active_w ? rpl_i[gi] : dcr_i[gi];
+        assign comb_xq[gi] = psram_replay_active_w ? rpl_q[gi] : dcr_q[gi];
+    end endgenerate
+    assign comb_xvalid = psram_replay_active_w ? rpl_valid : dcr_valid;
+
+    // =========================================================================
     // Stage 8: MRC Combiner
     // =========================================================================
     wire signed [7:0] comb_y_i, comb_y_q;
@@ -474,11 +540,11 @@ module mimo_rx_top (
     mrc_combiner u_comb (
         .clk_16m (clk),
         .rst_n   (rst_n),
-        .x_i0 (dcr_i[0]), .x_q0 (dcr_q[0]),
-        .x_i1 (dcr_i[1]), .x_q1 (dcr_q[1]),
-        .x_i2 (dcr_i[2]), .x_q2 (dcr_q[2]),
-        .x_i3 (dcr_i[3]), .x_q3 (dcr_q[3]),
-        .x_valid  (dcr_valid),
+        .x_i0 (comb_xi[0]), .x_q0 (comb_xq[0]),
+        .x_i1 (comb_xi[1]), .x_q1 (comb_xq[1]),
+        .x_i2 (comb_xi[2]), .x_q2 (comb_xq[2]),
+        .x_i3 (comb_xi[3]), .x_q3 (comb_xq[3]),
+        .x_valid  (comb_xvalid),
         .W_re0 (W_hw_re[0]), .W_im0 (W_hw_im[0]),
         .W_re1 (W_hw_re[1]), .W_im1 (W_hw_im[1]),
         .W_re2 (W_hw_re[2]), .W_im2 (W_hw_im[2]),
@@ -494,13 +560,16 @@ module mimo_rx_top (
 
     // =========================================================================
     // Stage 9: ΣΔ Re-modulator → SX1302 Radio A
+    // During PSRAM BUFFERING (buf_active && !replay_active): silence output.
+    // During REPLAY: combiner processes PSRAM replay IQ → normal remod path.
     // =========================================================================
+    wire psram_silence = psram_buf_active && !psram_replay_active_w;
     sd_remod u_remod (
         .clk_32m  (clk),
         .rst_n    (rst_n),
-        .in_i     (comb_y_i),
-        .in_q     (comb_y_q),
-        .in_valid (comb_y_valid),
+        .in_i     (psram_silence ? 8'sd0 : comb_y_i),
+        .in_q     (psram_silence ? 8'sd0 : comb_y_q),
+        .in_valid (psram_silence ? 1'b0  : comb_y_valid),
         .en       (1'b1),
         .out_i    (REMOD_A_I),
         .out_q    (REMOD_A_Q)
