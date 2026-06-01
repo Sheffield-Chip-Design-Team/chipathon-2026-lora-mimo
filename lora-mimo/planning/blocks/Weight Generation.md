@@ -47,7 +47,7 @@ EGC is not implemented in hardware. See [Future extensions](#future-extensions).
 
 ```
 Training Accumulator
-   Z_j[3:0] (int64), n_acc, training_done
+   Z_j[3:0] (int32 port, 31-bit internal), n_acc, sf, training_done
         |
         v
  ┌──────────────────────┐   W_HW[3:0]  ──────► read-only registers
@@ -102,16 +102,17 @@ Layout: 4 branches × 2 words (I, Q) × int16 Q1.15 = 8 × 16-bit registers.
 
 ## Input normalisation
 
-The training accumulator outputs `Z_j` (signed int32 complex per branch) and `n_acc` (sample count). Since `n_acc` is a common scalar, dividing by it scales all `h_j` identically and cancels in weight ratios — the hardware path works directly with `Z_j`.
+The training accumulator outputs `Z_j` (32-bit port, 31-bit internal signed) and `n_acc`. The hardware path receives `sf` (spreading factor) as an additional input.
 
-Before calibration, right-shift all `Z_j` by a common amount `K` so the largest I/Q component fits in the signed Q1.15-friendly range:
+Before calibration, `Z_j` is right-shifted by `sf` bits to normalise across SF7–SF12:
 
 ```
-H_j = Z_j >>> K
-K   = max(0, floor(log2(max_j(|Z_j.I|, |Z_j.Q|))) - 14)
+H_j = Z_j >>> sf
 ```
 
-`K` is derived from the leading-zero count of the largest component across all branches. Common shift preserves relative magnitudes and phases exactly.
+`Z_j` accumulates over 8×M samples, where M=2^sf. At SF12, max|Z_j| ≈ 1057M < 2^30; after shifting right by sf=12, max|H_j| ≈ 258k < 2^18. This gives a consistent 18-bit range for all SFs with no per-packet K computation required.
+
+> **Implementation note:** The previous K-based normalisation (`K` derived from leading-zero count, K_wire from n_acc) has been removed. The SF shift replaces it entirely and is correct for all supported SFs.
 
 ---
 
@@ -310,8 +311,9 @@ When `PSRAM_EN = 1`, this live-payload deadline is replaced by the replay deadli
 | `clk` | in | 1 | 16 MHz | System clock |
 | `rst_n` | in | 1 | — | Active-low reset |
 | `training_done` | in | 1 | per packet | Trigger from training accumulator |
-| `Z_j[3:0]` | in | 4×2×64 | per packet | Complex channel estimates (int64 I+Q per branch) |
-| `n_acc` | in | 10 | per packet | Number of samples in Z_j (unused in hardware path; informational for firmware) |
+| `Z_j[3:0]` | in | 4×2×32 | per packet | Complex channel estimates (int32 port, 31-bit internal signed per branch) |
+| `n_acc` | in | 10 | per packet | Number of samples in Z_j (informational for firmware; hardware uses `sf` for normalisation) |
+| `sf` | in | 4 | static | Spreading factor (6–12); used for Z_j SF-normalisation shift |
 | `wgt_src` | in | 1 | static | 0=hardware auto, 1=software override; from `WGT_CTRL[0]` |
 | `wgt_auto_commit` | in | 1 | static | 1=hardware auto-commits; from `WGT_CTRL[1]` |
 | `wgt_mode` | in | 2 | static | Hardware combining mode: 00=bypass, 01=SC, 10=reserved, 11=MRC; from `WGT_CTRL[3:2]` |
@@ -330,7 +332,7 @@ When `PSRAM_EN = 1`, this live-payload deadline is replaced by the replay deadli
 
 1. **Shift normaliser**
    - Finds leading-zero count of max component across all branches
-   - Computes common shift K; right-shifts all Z_j to int32 range
+   - Right-shifts all Z_j by `sf` bits → H_j fits 18-bit range for all SF7–SF12
 
 2. **Calibration multiplier**
    - 4 × complex multiply: H_j_cal = H_j · conj(cal_j)

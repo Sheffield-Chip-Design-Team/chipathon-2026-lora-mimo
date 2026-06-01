@@ -44,8 +44,8 @@ So the architectural role is:
 | Parameter | Value | Notes |
 | --- | --- | --- |
 | Window length | 2^SF samples (per symbol) | Runtime-configurable via `SF_CFG` register |
-| Accumulator width | 32-bit | int16² = int32; 4096 samples × int32 → 44 bits worst-case — use 48-bit or saturate to 32-bit with right-shift; re-evaluate once decimator output width (12 or 16 bit) is decided |
-| Output width | 16-bit unsigned | Saturated right-shift of 32-bit accumulator |
+| Accumulator width | 28-bit internal, 32-bit output port | 8-bit inputs: max acc at SF12 = 4096×2×127² = 132M < 2^27. 28-bit unsigned (max 268M) gives 1 guard bit. Output `energy_sum` is zero-extended to 32-bit; `energy` is saturated to 16-bit. |
+| Output width | 16-bit unsigned | Saturated `acc[27:12]` — top 16 bits of the 28-bit accumulator |
 
 ---
 

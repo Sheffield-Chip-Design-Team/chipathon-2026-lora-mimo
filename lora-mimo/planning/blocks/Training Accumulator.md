@@ -197,9 +197,11 @@ The cross-product `rx_j[n] · conj(rx_r[n])` produces:
 | Cross-product component | ±2 × 127² ≈ 32K | int16 (fits int32) |
 | Z_j component (sum over ~640) | ≈ ±21M | fits int32 (max ±2.1G) |
 
-**Use int32 per accumulator component.** With 8-bit inputs and N_acc up to 640 (16-symbol preamble, SC_HITS_REQ=2), Z_j ≤ 640 × 2 × 127² ≈ 20.6M — well within int32 range. int32 is sufficient with ~100× headroom.
+**Use 31-bit internal accumulators (32-bit output ports).** The accumulation window is 8×M samples (not N_acc). At SF12, 8×4096×2×127² = 1057M < 2^30 — fits in 31-bit signed (max ±1073M). int32 output ports are zero-padded from 31-bit internal values.
 
-Total register cost: 4 branches × 2 components (I, Q) × 32 bits = **32 bytes** (halved from int64).
+> **Note:** At SF12 with 8×M=32768 samples the true maximum overflow boundary is 2^30, not 2^31. int32 with sign bit has range ±2^31 which covers this, but the RTL uses 31-bit internal accumulators to save adder width.
+
+Total internal register cost: 4 branches × 2 components (I, Q) × 31 bits ≈ **31 bytes**.
 
 Total register cost: 4 branches × 2 components (I, Q) × 64 bits = **64 bytes**.
 
@@ -221,8 +223,8 @@ The reference branch samples `rx_r[n]` must be buffered for one clock cycle so a
 | `sf` | in | 3 | static | Spreading factor; sets M = 2^SF |
 | `ref_sel` | in | 2 | static | Reference branch index from `TACC_REF_SEL` register |
 | `psram_en` | in | 1 | static | 0 = baseline live path, 1 = extended PSRAM replay path |
-| `Z_j[3:0]` | out | 4×2×32 | per packet | Complex cross-correlation estimates (I+Q, int32 per branch) |
-| `E_ref` | out | 64 | per packet | Reference branch energy: `Σ\|rx_r[n]\|²` (int64, real). Used to recover absolute `\|h_j\|²` — see Recovering absolute channel magnitudes. |
+| `Z_j[3:0]` | out | 4×2×32 | per packet | Complex cross-correlation estimates (int32 port, 31-bit internal signed per branch) |
+| `E_ref` | out | 64 | per packet | Reference branch energy: `Σ\|rx_r[n]\|²` (int64 port, 31-bit internal). Used to recover absolute `\|h_j\|²`. |
 | `training_done` | out | 1 | per packet | Asserts when accumulation is complete; triggers weight gen |
 | `n_acc` | out | 10 | per packet | Number of samples accumulated (for weight gen normalisation) |
 
