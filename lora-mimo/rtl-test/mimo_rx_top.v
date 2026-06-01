@@ -371,6 +371,7 @@ module mimo_rx_top (
         .Z_i2 (Z_i[2]), .Z_q2 (Z_q[2]),
         .Z_i3 (Z_i[3]), .Z_q3 (Z_q[3]),
         .n_acc         (n_acc),
+        .sf            (rb_sf_cfg),
         .wgt_src       (rb_wgt_src),
         .wgt_auto_commit (rb_wgt_auto_commit),
         .wgt_mode      (rb_wgt_mode),

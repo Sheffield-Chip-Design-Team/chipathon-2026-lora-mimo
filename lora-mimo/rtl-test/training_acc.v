@@ -6,6 +6,14 @@
 // Budget: iq_valid arrives every ≥20 cycles — fits comfortably.
 // Area change: 4 muls → 2 muls (~−17k µm²).
 // GF180MCU, 3.3V, 16 MHz clock domain
+//
+// Accumulator width reduction:
+//   Z_i/Z_q: 32 → 31-bit internal. Accumulates over 8×M samples. Max |Z| at
+//     SF12 = 8×4096×2×127² = 1057M < 2^30. 31-bit signed holds ±1073M (1 guard bit).
+//     Output ports stay 32-bit (sign-extended at commit).
+//   E_ref: 64 → 31-bit internal. Same bound. Output port stays 64-bit.
+//   weight_gen already clips Z to [17:0]; Z bit-selection fix handled in weight_gen.v.
+//   M_full: 32 → 13-bit. Max value 4096 = 2^12.
 
 module signed_mul8_pipe (
     input  wire              clk,
@@ -34,18 +42,18 @@ module training_acc (
     output reg  [9:0]  n_acc
 );
 
-    // M = 2^sf
-    reg [31:0] M_full;
+    // M = 2^sf — max 4096 fits in 13 bits
+    reg [12:0] M_full;
     always @(*) begin
         case (sf)
-            4'd6:  M_full = 32'd64;
-            4'd7:  M_full = 32'd128;
-            4'd8:  M_full = 32'd256;
-            4'd9:  M_full = 32'd512;
-            4'd10: M_full = 32'd1024;
-            4'd11: M_full = 32'd2048;
-            4'd12: M_full = 32'd4096;
-            default: M_full = 32'd128;
+            4'd6:  M_full = 13'd64;
+            4'd7:  M_full = 13'd128;
+            4'd8:  M_full = 13'd256;
+            4'd9:  M_full = 13'd512;
+            4'd10: M_full = 13'd1024;
+            4'd11: M_full = 13'd2048;
+            4'd12: M_full = 13'd4096;
+            default: M_full = 13'd128;
         endcase
     end
 
@@ -107,6 +115,12 @@ module training_acc (
     // zi intermediate: latched when sub_step=0 product lands; consumed at sub_step=1.
     reg signed [15:0] zi_latch;
 
+    // Narrow internal accumulators — sign-extended to output ports on commit.
+    // Max |Z| = 8×4096×2×127² = 1057M < 2^30. 31-bit signed gives 1 guard bit.
+    reg signed [30:0] Z_i0_a, Z_q0_a, Z_i1_a, Z_q1_a;
+    reg signed [30:0] Z_i2_a, Z_q2_a, Z_i3_a, Z_q3_a;
+    reg signed [30:0] E_ref_a;
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             sample_count  <= 32'd0;
@@ -131,6 +145,11 @@ module training_acc (
             mul_sub_0 <= 1'b0; mul_sub_1 <= 1'b0;
             mul_last_0 <= 1'b0; mul_last_1 <= 1'b0;
             zi_latch <= 16'sd0;
+            Z_i0_a <= 31'sd0; Z_q0_a <= 31'sd0;
+            Z_i1_a <= 31'sd0; Z_q1_a <= 31'sd0;
+            Z_i2_a <= 31'sd0; Z_q2_a <= 31'sd0;
+            Z_i3_a <= 31'sd0; Z_q3_a <= 31'sd0;
+            E_ref_a <= 31'sd0;
             Z_i0 <= 32'sd0; Z_q0 <= 32'sd0;
             Z_i1 <= 32'sd0; Z_q1 <= 32'sd0;
             Z_i2 <= 32'sd0; Z_q2 <= 32'sd0;
@@ -148,12 +167,12 @@ module training_acc (
                 noise_mode_r  <= 1'b0;
                 noise_done    <= 1'b0;
                 acc_start     <= timing_ref;
-                acc_end       <= timing_ref + (M_full << 3) - 32'd1;
-                Z_i0 <= 32'sd0; Z_q0 <= 32'sd0;
-                Z_i1 <= 32'sd0; Z_q1 <= 32'sd0;
-                Z_i2 <= 32'sd0; Z_q2 <= 32'sd0;
-                Z_i3 <= 32'sd0; Z_q3 <= 32'sd0;
-                E_ref <= 64'sd0;
+                acc_end       <= timing_ref + (32'd1 << (sf[3:0] + 4'd3)) - 32'd1;
+                Z_i0_a <= 31'sd0; Z_q0_a <= 31'sd0;
+                Z_i1_a <= 31'sd0; Z_q1_a <= 31'sd0;
+                Z_i2_a <= 31'sd0; Z_q2_a <= 31'sd0;
+                Z_i3_a <= 31'sd0; Z_q3_a <= 31'sd0;
+                E_ref_a <= 31'sd0;
                 n_acc <= 10'd0;
             end
 
@@ -165,12 +184,12 @@ module training_acc (
                 noise_ready  <= 1'b0;
                 training_done <= 1'b0;
                 acc_start    <= sample_count + 32'd1;
-                acc_end      <= sample_count + (M_full << 3);
-                Z_i0 <= 32'sd0; Z_q0 <= 32'sd0;
-                Z_i1 <= 32'sd0; Z_q1 <= 32'sd0;
-                Z_i2 <= 32'sd0; Z_q2 <= 32'sd0;
-                Z_i3 <= 32'sd0; Z_q3 <= 32'sd0;
-                E_ref <= 64'sd0;
+                acc_end      <= sample_count + (32'd1 << (sf[3:0] + 4'd3));
+                Z_i0_a <= 31'sd0; Z_q0_a <= 31'sd0;
+                Z_i1_a <= 31'sd0; Z_q1_a <= 31'sd0;
+                Z_i2_a <= 31'sd0; Z_q2_a <= 31'sd0;
+                Z_i3_a <= 31'sd0; Z_q3_a <= 31'sd0;
+                E_ref_a <= 31'sd0;
                 n_acc <= 10'd0;
             end
 
@@ -211,30 +230,40 @@ module training_acc (
                         // zi = I×ref_i + Q×ref_q — latch for use at sub_step 1
                         zi_latch <= sum_p;
                     end else begin
-                        // zq = Q×ref_i − I×ref_q — accumulate both zi and zq
+                        // zq = Q×ref_i − I×ref_q — accumulate both zi and zq (28-bit)
                         case (mul_state_1)
                             3'd1: begin
-                                Z_i0 <= Z_i0 + {{16{zi_latch[15]}}, zi_latch};
-                                Z_q0 <= Z_q0 + {{16{diff_p[15]}},   diff_p};
+                                Z_i0_a <= Z_i0_a + {{15{zi_latch[15]}}, zi_latch};
+                                Z_q0_a <= Z_q0_a + {{12{diff_p[15]}},   diff_p};
                             end
                             3'd2: begin
-                                Z_i1 <= Z_i1 + {{16{zi_latch[15]}}, zi_latch};
-                                Z_q1 <= Z_q1 + {{16{diff_p[15]}},   diff_p};
+                                Z_i1_a <= Z_i1_a + {{15{zi_latch[15]}}, zi_latch};
+                                Z_q1_a <= Z_q1_a + {{12{diff_p[15]}},   diff_p};
                             end
                             3'd3: begin
-                                Z_i2 <= Z_i2 + {{16{zi_latch[15]}}, zi_latch};
-                                Z_q2 <= Z_q2 + {{16{diff_p[15]}},   diff_p};
+                                Z_i2_a <= Z_i2_a + {{15{zi_latch[15]}}, zi_latch};
+                                Z_q2_a <= Z_q2_a + {{12{diff_p[15]}},   diff_p};
                             end
                             default: begin
-                                Z_i3 <= Z_i3 + {{16{zi_latch[15]}}, zi_latch};
-                                Z_q3 <= Z_q3 + {{16{diff_p[15]}},   diff_p};
+                                Z_i3_a <= Z_i3_a + {{15{zi_latch[15]}}, zi_latch};
+                                Z_q3_a <= Z_q3_a + {{12{diff_p[15]}},   diff_p};
                             end
                         endcase
                     end
                 end else begin
-                    // state 5: E_ref = ref_i² + ref_q²
-                    E_ref <= E_ref + {{48{sum_p[15]}}, sum_p};
+                    // state 5: E_ref = ref_i² + ref_q² (28-bit accumulator)
+                    E_ref_a <= E_ref_a + {{15{sum_p[15]}}, sum_p};
                     if (mul_last_1) begin
+                        // Commit narrow accumulators to wide output ports (sign-extend)
+                        Z_i0 <= {{4{Z_i0_a[27]}}, Z_i0_a};
+                        Z_q0 <= {{4{Z_q0_a[27]}}, Z_q0_a};
+                        Z_i1 <= {{4{Z_i1_a[27]}}, Z_i1_a};
+                        Z_q1 <= {{4{Z_q1_a[27]}}, Z_q1_a};
+                        Z_i2 <= {{4{Z_i2_a[27]}}, Z_i2_a};
+                        Z_q2 <= {{4{Z_q2_a[27]}}, Z_q2_a};
+                        Z_i3 <= {{4{Z_i3_a[27]}}, Z_i3_a};
+                        Z_q3 <= {{4{Z_q3_a[27]}}, Z_q3_a};
+                        E_ref <= {{36{E_ref_a[27]}}, E_ref_a};
                         if (noise_mode_r) begin
                             noise_ready  <= 1'b1;
                             noise_done   <= 1'b1;

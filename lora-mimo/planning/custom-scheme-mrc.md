@@ -1,6 +1,20 @@
 # Custom Scheme MRC Demonstrator
 
-## Goal
+> **SUPERSEDED — DO NOT USE FOR IMPLEMENTATION**
+>
+> This document described an earlier architecture based on a fully custom (non-LoRa) packet format.
+> That direction has been abandoned. The current architecture uses **standard LoRa packet structure**
+> with a non-FFT streaming acquisition frontend.
+>
+> Refer to instead:
+> - [`Non-FFT LoRa Frontend Proposal.md`](Non-FFT%20LoRa%20Frontend%20Proposal.md) — current architecture
+> - [`DSP Flow.md`](DSP%20Flow.md) — stage-by-stage pipeline
+>
+> This file is retained for historical reference only.
+
+---
+
+## Goal (historical)
 
 Demonstrate coherent receive combining with `NR=4` using the existing `SX1257` front-end while avoiding the RAM-heavy parts of the original LoRa-compatible architecture.
 

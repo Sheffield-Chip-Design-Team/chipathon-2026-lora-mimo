@@ -3,7 +3,9 @@
 // GF180MCU, 3.3V, 32 MHz single clock domain
 //
 // Area-reduction changes vs original:
-//   H registers:    32→18 bit (max |Z| = 1023×127 = 129,921 < 2^17 → 18-bit signed)
+//   H registers:    32→18 bit. Z is right-shifted by SF before latching into H,
+//                   normalising across SF7-SF12. Max |Z|/2^SF ≤ 8×127² = 258k < 2^18.
+//                   K_wire removed — SF normalisation replaces the old n_acc-based shift.
 //   Hc registers:   32→18 bit (16×8 calibration product >>>7 → 17-bit max)
 //   Wraw registers: eliminated — ST_SCALE writes directly to W_hw with inline
 //                   saturation, reducing register count by 8×32 = 256 flops.
@@ -20,6 +22,7 @@ module weight_gen (
     input  wire        training_done,
     input  wire signed [31:0] Z_i0, Z_q0, Z_i1, Z_q1, Z_i2, Z_q2, Z_i3, Z_q3,
     /* verilator lint_off UNUSEDSIGNAL */ input  wire [9:0]  n_acc, /* verilator lint_on UNUSEDSIGNAL */
+    input  wire [3:0]  sf,
     input  wire        wgt_src,
     input  wire        wgt_auto_commit,
     input  wire [1:0]  wgt_mode,
@@ -53,7 +56,7 @@ module weight_gen (
     reg signed [17:0] H_i0, H_q0, H_i1, H_q1, H_i2, H_q2, H_i3, H_q3;
     reg signed [17:0] Hc_i0, Hc_q0, Hc_i1, Hc_q1, Hc_i2, Hc_q2, Hc_i3, Hc_q3;
 
-    reg [4:0] K_wire, K;
+    reg [4:0] K;          // always 0 — SF normalisation applied at Z latch
     reg [18:0] best_metric;
     reg [17:0] peak_abs;
     reg [4:0]  mrc_shift;
@@ -95,11 +98,16 @@ module weight_gen (
 
     reg training_done_prev;
 
-    always @(*) begin : blk_K
-        if      (n_acc >= 10'd513) K_wire = 5'd2;
-        else if (n_acc >= 10'd257) K_wire = 5'd1;
-        else                       K_wire = 5'd0;
-    end
+    // K is held at 0; Z is pre-normalised by SF when latched into H.
+    // Intermediate wires for SF-normalised Z (Verilog-2001: no part-select on expr).
+    wire signed [31:0] Z_i0_n = $signed(Z_i0) >>> sf;
+    wire signed [31:0] Z_q0_n = $signed(Z_q0) >>> sf;
+    wire signed [31:0] Z_i1_n = $signed(Z_i1) >>> sf;
+    wire signed [31:0] Z_q1_n = $signed(Z_q1) >>> sf;
+    wire signed [31:0] Z_i2_n = $signed(Z_i2) >>> sf;
+    wire signed [31:0] Z_q2_n = $signed(Z_q2) >>> sf;
+    wire signed [31:0] Z_i3_n = $signed(Z_i3) >>> sf;
+    wire signed [31:0] Z_q3_n = $signed(Z_q3) >>> sf;
 
     // -----------------------------------------------------------------------
     // Serialised calibration multiplier
@@ -245,10 +253,12 @@ module weight_gen (
                     wgen_active   <= 1'b0;
                     wgen_mode_dbg <= wgt_mode;
                     if (training_done && !training_done_prev) begin
-                        H_i0 <= Z_i0[17:0]; H_q0 <= Z_q0[17:0];
-                        H_i1 <= Z_i1[17:0]; H_q1 <= Z_q1[17:0];
-                        H_i2 <= Z_i2[17:0]; H_q2 <= Z_q2[17:0];
-                        H_i3 <= Z_i3[17:0]; H_q3 <= Z_q3[17:0];
+                        // Right-shift Z by SF to normalise across SF7-SF12.
+                        // Max |Z|>>SF = 8×127² = 258k < 2^18 for all SFs.
+                        H_i0 <= Z_i0_n[17:0]; H_q0 <= Z_q0_n[17:0];
+                        H_i1 <= Z_i1_n[17:0]; H_q1 <= Z_q1_n[17:0];
+                        H_i2 <= Z_i2_n[17:0]; H_q2 <= Z_q2_n[17:0];
+                        H_i3 <= Z_i3_n[17:0]; H_q3 <= Z_q3_n[17:0];
                         state       <= ST_SHIFT;
                         wgen_active <= 1'b1;
                         sub_st      <= 4'd0;
@@ -256,7 +266,7 @@ module weight_gen (
                 end
 
                 ST_SHIFT: begin
-                    K     <= K_wire;
+                    K     <= 5'd0;   // SF normalisation already applied at H latch
                     state <= ST_CALIBRATE;
                     sub_st <= 4'd0;
                     calib_ant  <= 2'd0;
