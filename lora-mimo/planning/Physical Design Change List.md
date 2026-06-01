@@ -260,7 +260,17 @@ All figures are Yosys synthesis with `gf180mcu_as_sc_mcu7t3v3` TT/25°C/3.3 V
 | `gf180mcu_fd_ip_sram__sram512x8m8wm1` (frontend buf) | 1 | 209,357 | **209 k** |
 | **SRAM total** | | | **520 k** |
 
-#### Grand total
+#### Hardened stdcell macros
+
+Blocks hardened as standalone GDS macros and instantiated in the top-level PnR. This achieves higher local utilisation than the global FP\_CORE\_UTIL=40 target, reducing die footprint.
+
+| Macro | Util config | Actual util | Die area (×1) | Instances | Die area total | DRC |
+|---|---|---|---|---|---|---|
+| `sd_decimator_cic_only` | 70% | 81% | 139 k µm² | 4 | **556 k µm²** | 0 |
+
+Flat-top equivalent (4 × ~187 k at FP\_CORE\_UTIL=40): ~748 k µm². **Macro saves ~192 k µm²** in total die area.
+
+#### Grand total (logic + SRAMs, stdcell area basis)
 
 | Category | µm² |
 |---|---|
@@ -268,10 +278,12 @@ All figures are Yosys synthesis with `gf180mcu_as_sc_mcu7t3v3` TT/25°C/3.3 V
 | SRAM macros | ~520 k |
 | **Total logic** | **~2,086 k ≈ 2.09 mm²** |
 | **Realistic die at FP_CORE_UTIL=40** | **~3.8 mm²** (confirmed by job 1127 floorplan) |
+| **Estimated die with hardened CIC macros** | **~3.6 mm²** (−192 k µm² from CIC macro packing) |
 
 #### Changes made in session 3 (2026-06-01):
 - `sc_detector`: NR=2 → NR=1 (single-channel preamble lock), 32→24-bit accumulators, 17→13-bit eval multiplier. 193 k → 164 k (−29 k). SGE job 1138.
 - `training_acc`: 4 shared 8×8 muls → 2 muls, 2 sub-cycles per antenna state (sub0=zi, sub1=zq). 11-cycle sample budget vs ≥20-cycle iq\_valid interval. −21 k in hierarchical context (153 k → 132 k). SGE job 1141.
+- `sd_decimator_cic_only`: hardened as compact standalone macro at FP\_CORE\_UTIL=70 (81% actual utilisation). 139 k µm² die area per instance vs ~187 k flat. **Die area saving: −192 k µm² for ×4** (556 k vs 748 k). DRC=0, TT/FF timing met. SGE jobs 1144–1146. Config: `ol_sd_decimator_cic_only/config_util70.json`.
 
 #### Changes made in session 2 (2026-05-31):
 - `energy_meas`: 8 parallel squarers → 1 shared TDM squarer, 9-step FSM. 98 k → 75 k (−23 k). SGE job 1120.
