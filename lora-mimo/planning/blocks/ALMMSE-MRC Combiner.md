@@ -139,6 +139,77 @@ This makes the first packet recoverable as a single-antenna packet if W arrives 
 
 ---
 
+## Area reduction analysis — 2026-05-31
+
+**Current implementation:** `mrc_combiner.v`, 121 k µm² (Yosys, gf180mcu_as_sc_mcu7t3v3, TT/25°C/3.3 V).
+
+### Area breakdown
+
+| Component | Approx. µm² | Notes |
+|---|---|---|
+| 4× 16×8 multipliers (combinatorial) | ~70 k | Core of `prod_i_next` / `prod_q_next` |
+| Variable `post_gain_shift` barrel shift (33-bit, 3-bit select) | ~15 k | Lines 74–75 in RTL |
+| 26-bit accumulators + adders | ~20 k | `acc_i`, `acc_q`, final pipeline register |
+| MUX pipeline registers + FSM control | ~15 k | 8 dedicated W/X latch regs, state machine |
+
+The 4 multipliers are the minimum needed to compute one complex multiply in a single clock cycle:
+`prod_i = w_re×x_i − w_im×x_q` and `prod_q = w_re×x_q + w_im×x_i`.
+The block already TDMs across 4 antennas (7 states per sample, 7 cycles used of 256-cycle budget at R=256).
+
+### Cut options
+
+**Option A — Serialise I and Q (4 muls → 2 muls, ~−35 k, low effort)**
+
+Compute I and Q in sequential sub-cycles instead of in parallel:
+- Sub-step 1: `w_re×x_i` and `w_re×x_q` → latch both
+- Sub-step 2: `w_im×x_q` and `w_im×x_i` → form `prod_i = p1−p2`, `prod_q = p3+p4`
+
+2 cycles per antenna × 4 antennas = 8 cycles total (vs 6 currently). Budget remains 256 cycles.
+Saves 2 of the 4 multipliers. Straightforward RTL change; no algorithmic impact.
+**Estimated result: ~86 k µm².**
+
+**Option B — Reduce weight precision 16-bit → 12-bit (~−30 k, medium effort)**
+
+12×8 multipliers instead of 16×8. Weight quantisation noise is negligible for LoRa:
+12-bit gives 72 dB SNR on weights; channel estimation noise dominates well before that.
+Requires `weight_gen.v` output ports narrowed to 12-bit and all downstream register map widths adjusted.
+Can be combined with Option A.
+**Estimated result (A+B): ~60 k µm².**
+
+**Option C — Fix `post_gain_shift` at synthesis time (~−12 k, trivial)**
+
+The 3-bit variable barrel shift (COMB_POST_GAIN) synthesises to an expensive 33-bit MUX tree.
+If the gain is fixed at compile time (e.g., always 2), this is free wiring.
+Only worthwhile if runtime adjustment of post-combine gain is not needed.
+**Estimated result (C alone): ~109 k µm².**
+
+**Option D — CORDIC rotation (~−50 k net, high effort)**
+
+Replace all 4 multipliers with a CORDIC rotator (shifts + adds only).
+~16 iterations for 12-bit precision; 32 CORDIC cycles × 4 antennas = 128 cycles — fits in budget.
+Eliminates ~70 k of multiplier area; adds ~20 k of CORDIC control/shift logic.
+Most aggressive option; requires careful fixed-point validation of combining gain.
+**Estimated result: ~70 k µm².**
+
+**Option E — Share multiplier with `training_acc` (~−35 k from training_acc side)**
+
+`training_acc` uses 4× 8×8 multipliers during preamble only. `mrc_combiner` uses 4× 16×8 during data phase.
+These operate at non-overlapping times. A shared 16×8 unit (with narrower mode for training) would
+eliminate `training_acc`'s dedicated multipliers. Saves area on the `training_acc` side rather than here.
+Moderate complexity; cross-module interface change.
+
+### Recommendation
+
+**Best near-term cut: A + C** — serialise I/Q and fix post_gain_shift. Combined saving ~47 k, effort is low,
+no algorithmic risk. Brings mrc_combiner from 121 k to ~74 k µm².
+
+**Further reduction:** Add B (12-bit weights) for a total of ~60 k — roughly half the current area — at
+the cost of a weight_gen port change. Still no algorithmic degradation for LoRa.
+
+**Not recommended for this tapeout:** D (CORDIC) — high implementation risk relative to the saving.
+
+---
+
 ## Related blocks
 
 - [ΣΔ Decimator](ΣΔ%20Decimator.md) — 8-bit signed input
