@@ -7,64 +7,78 @@
 **Based on AS cell synthesis (jobs 1241–1243). FD cells within ~1%.**
 70% effective density target (stdcell + macros / core area).
 
-| Config | Stdcell | Macros | Die (70% eff. density) |
-|--------|---------|--------|------------------------|
-| NR=2 CIC-only | ~1.21 mm² | 0.41 mm² | **~2.31 mm²** |
-| NR=2 TDM CIC  | ~1.19 mm² | 0.41 mm² | **~2.29 mm²** |
-| NR=4 CIC-only | ~1.55 mm² | 0.52 mm² | **~2.96 mm²** |
-| NR=4 TDM CIC  | ~1.50 mm² | 0.52 mm² | **~2.89 mm²** |
+At 65% effective density (empirical DRT-safe limit from P&R history):
+
+| Config | Stdcell | Macros | Die (65%) |
+|--------|---------|--------|-----------|
+| NR=2 TDM CIC, baseline | ~1.19 mm² | 0.41 mm² | **~2.46 mm²** |
+| NR=2 TDM CIC + sw-wgt + ser-IQ + no-NFE | ~1.03 mm² | 0.41 mm² | **~2.22 mm²** |
+| NR=4 TDM CIC, baseline | ~1.50 mm² | 0.52 mm² | **~3.11 mm²** |
+| NR=4 TDM CIC + sw-wgt + ser-IQ + no-NFE | ~1.31 mm² | 0.52 mm² | **~2.82 mm²** |
+
+Cut stack: sw weight_gen (−105k NR=2 / −138k NR=4), mrc ser-IQ (−23k / −24k), remove NFE (−34k each).
 
 > **Timing caveat:** FD cells close TT 25°C at 32 MHz but fail SS 125°C. AS cells close SS but add ~16% die area (~+0.37 mm² NR=2, ~+0.46 mm² NR=4).
 
-### Per-block breakdown (AS cells, jobs 1241–1243)
+### Per-block breakdown (AS cells, jobs 1241–1247)
 
-| Block | ×NR? | NR=4 (µm²) | NR=2 (µm²) |
-|---|---|---|---|
-| PicoRV32 core + wrap | No | 307,618 | 307,618 |
-| sd_decimator CIC-only | Yes | 300,207 | 150,103 |
-| sd_decimator TDM CIC | Yes | 256,779 | 128,694 |
-| dc_removal | Yes (1 module, all-NR) | 50,009 | ~25,000 |
-| training_acc | Yes | 155,762 | 111,358 |
-| weight_gen | Yes | 138,115 | 105,198 |
-| mrc_combiner | Yes | 121,366 | 107,394 |
-| sc_detector | No (NR=1) | 111,608 | 111,608 |
-| reg_bank | Partial | 99,034 | 90,247 |
-| energy_meas | No | 70,383 | 70,383 |
-| psram_buf_ctrl | No | 46,475 | 46,475 |
-| noise_floor_est | No | 33,461 | 33,461 |
-| packet_ctrl_fsm | No | 32,902 | 32,902 |
-| sd_remod | No | 29,262 | 29,262 |
-| frontend_buf_ctrl | No | 17,434 | 17,434 |
-| spi_slave + master | No | 27,713 | 27,713 |
-| irq_ctrl + ahb_bus | No | 5,036 | 5,036 |
-| **Stdcell total (CIC-only)** | | **~1,546k** | **~1,211k** |
-| **Stdcell total (TDM CIC)** | | **~1,502k** | **~1,190k** |
+| Block | ×NR? | NR=4 (µm²) | NR=2 (µm²) | Cut option |
+|---|---|---|---|---|
+| PicoRV32 core + wrap | No | 307,618 | 307,618 | SERV swap (−~250k) |
+| sd_decimator TDM CIC | Yes | 256,779 | 128,694 | already optimised |
+| dc_removal | Yes (1 module) | 50,009 | ~25,000 | — |
+| training_acc | Yes | 155,762 | 111,358 | — |
+| weight_gen | Yes | 138,115 | 105,198 | **→ software (−105k NR=2)** |
+| mrc_combiner (4 muls) | Yes | 121,366 | 107,394 | — |
+| mrc_combiner ser-IQ (2 muls) | Yes | 97,601 | **84,315** | **ser-IQ RTL (−23k NR=2)** |
+| sc_detector | No (NR=1) | 111,608 | 111,608 | — |
+| reg_bank | Partial | 99,034 | 90,247 | sw weight_gen saves ~0 |
+| energy_meas | No | 70,383 | 70,383 | coarse saves only 1.2k |
+| psram_buf_ctrl | No | 46,475 | 46,475 | — |
+| noise_floor_est | No | 33,558 | 33,558 | **remove entirely (−34k)** |
+| packet_ctrl_fsm | No | 32,902 | 32,902 | — |
+| sd_remod | No | 29,262 | 29,262 | — |
+| frontend_buf_ctrl | No | 17,434 | 17,434 | — |
+| spi_slave + master | No | 27,713 | 27,713 | — |
+| irq_ctrl + ahb_bus | No | 5,036 | 5,036 | — |
+| **Baseline TDM CIC** | | **~1,502k** | **~1,190k** | |
+| **+ sw weight_gen** | | **−138k** | **−105k** | |
+| **+ ser-IQ mrc** | | **−24k** | **−23k** | |
+| **+ remove NFE** | | **−34k** | **−34k** | |
+| **Optimised total** | | **~1,306k** | **~1,028k** | |
 
 Notes:
-- dc_removal is a single module handling all NR antennas — not per-instance. NR=2 figure is a constant-propagation estimate.
-- NR=2 training_acc/mrc_combiner/weight_gen are constant-propagation estimates (ant2/3 tied to 0); FSM overhead retained so actual NR=2 rewrite would be ~5% smaller.
+- dc_removal is a single module for all NR channels; NR=2 is a constant-propagation estimate.
+- NR=2 training_acc/mrc_combiner/weight_gen are constant-propagation estimates; actual NR=2 rewrite ~5% smaller.
+- mrc_combiner ser-IQ (`mrc_combiner_serIQ.v`): 11-state machine, 2 multipliers, 11 cycles/sample vs 7 in baseline. Budget 256 cycles — ample margin.
+- Software weight_gen: PicoRV32 computes weights in ~800 cycles; SF7 training window = 131k cycles. 160× headroom.
+- NFE removal: safe if sigma2 feedback path is confirmed unused in final system.
+- opt-C (fix post_gain_shift=0): only saves 4k µm² — not worth the register-map change.
+- energy_meas_coarse: saves only 1.2k µm² — not worth implementing.
 
-### Die area summary (70% effective density, OCD macros)
+### Die area summary (65% effective density, OCD macros)
 
-| Config | Stdcell | Macros | Die |
-|--------|---------|--------|-----|
-| NR=2 CIC-only | ~1.21 mm² | 0.41 mm² | **~2.31 mm²** |
-| NR=2 TDM CIC | ~1.19 mm² | 0.41 mm² | **~2.29 mm²** |
-| NR=4 CIC-only | ~1.55 mm² | 0.52 mm² | **~2.96 mm²** |
-| NR=4 TDM CIC | ~1.50 mm² | 0.52 mm² | **~2.89 mm²** |
+65% is the conservative empirical limit from P&R history (DRT-0073 above ~65%).
+
+| Config | Stdcell | Macros | Die (65%) |
+|--------|---------|--------|-----------|
+| NR=2 TDM CIC, baseline | ~1.19 mm² | 0.41 mm² | **~2.46 mm²** |
+| NR=2 TDM CIC + sw-wgt + ser-IQ + no-NFE | ~1.03 mm² | 0.41 mm² | **~2.22 mm²** |
+| NR=4 TDM CIC, baseline | ~1.50 mm² | 0.52 mm² | **~3.11 mm²** |
+| NR=4 TDM CIC + sw-wgt + ser-IQ + no-NFE | ~1.31 mm² | 0.52 mm² | **~2.82 mm²** |
 
 Macros: 2× OCD 1024×8 (CPU IMEM/DMEM) + 1× OCD 512×8 (frontend buf, NR=2) or 1× FD 512×8 (NR=4).
 
-### System-level silicon comparison
+### System-level silicon comparison (updated)
 
-NR=4 costs 0.61 mm² more per die (+28%) but is a single-chip solution:
+| System | Config | Die | Total silicon |
+|--------|--------|-----|---------------|
+| NR=4 single chip | TDM CIC baseline | ~3.11 mm² | **~3.11 mm²** |
+| NR=4 single chip | + sw-wgt + ser-IQ + no-NFE | ~2.82 mm² | **~2.82 mm²** |
+| NR=2 cascade (×3) | TDM CIC baseline | ~2.46 mm² | **~7.38 mm²** |
+| NR=2 cascade (×3) | + sw-wgt + ser-IQ + no-NFE | ~2.22 mm² | **~6.66 mm²** |
 
-| System | Dies | Total silicon |
-|--------|------|--------------|
-| NR=4 single chip | 1 × 2.78 mm² | **2.78 mm²** |
-| NR=2 cascade (×3 identical) | 3 × 2.17 mm² | **6.51 mm²** |
-
-NR=4 is 2.3× more silicon-efficient for the whole system, eliminates inter-chip lock synchronisation, removes re-modulator SQNR accumulation risk, and gives true 4-branch MRC instead of hierarchical combining. The cascade is only justified if the submission has a hard per-die area limit below 2.78 mm².
+NR=4 remains 2.3× more silicon-efficient. The cascade is only justified if there is a hard per-die area limit below ~2.82 mm².
 
 ---
 
