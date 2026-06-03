@@ -8,10 +8,40 @@
 
 > **Timing caveat:** FD cells are characterised at 3 V but designed for 5 V. They close timing at TT 25°C at 32 MHz but fail the SS 125°C corner. AS cells (`gf180mcu_as_sc_mcu7t3v3`) close SS timing but add ~16% die area. This analysis uses FD cells as the baseline; switching to AS cells adds ~0.25 mm² (NR=2) or ~0.33 mm² (NR=4).
 
-| Config | Stdcell | Macros | Die (70% eff. density) |
-|--------|---------|--------|------------------------|
-| NR=2 CIC-only PicoRV32 | 1.11 mm² | 0.41 mm² | **2.17 mm²** |
-| NR=4 CIC-only PicoRV32 | 1.43 mm² | 0.52 mm² | **2.78 mm²** |
+### Per-block breakdown (AS cells, jobs 1241–1243)
+
+| Block | ×NR? | NR=4 (µm²) | NR=2 (µm²) |
+|---|---|---|---|
+| PicoRV32 core + wrap | No | 307,618 | 307,618 |
+| sd_decimator CIC-only | Yes | 300,207 | 150,103 |
+| sd_decimator TDM CIC | Yes | 256,779 | 128,694 |
+| dc_removal | Yes | 200,036 | 100,018 |
+| training_acc | Yes | 155,762 | 111,358 |
+| weight_gen | Yes | 138,115 | 105,198 |
+| mrc_combiner | Yes | 121,366 | 107,394 |
+| sc_detector | No (NR=1) | 111,608 | 111,608 |
+| reg_bank | Partial | 98,648 | ~80,000 |
+| energy_meas | No | 70,383 | 70,383 |
+| psram_buf_ctrl | No | 46,475 | 46,475 |
+| noise_floor_est | No | 33,461 | 33,461 |
+| packet_ctrl_fsm | No | 32,902 | 32,902 |
+| sd_remod | No | 29,262 | 29,262 |
+| frontend_buf_ctrl | No | 17,434 | 17,434 |
+| spi_slave + master | No | 27,713 | 27,713 |
+| irq_ctrl + ahb_bus | No | 5,036 | 5,036 |
+| **Stdcell total (CIC-only)** | | **~1,696k** | **~1,336k** |
+| **Stdcell total (TDM CIC)** | | **~1,652k** | **~1,315k** |
+
+NR=2 training_acc/mrc_combiner/weight_gen are constant-propagation estimates (ant2/3 tied to 0); FSM overhead retained so actual NR=2 rewrite would be ~5% smaller.
+
+### Die area summary (70% effective density, OCD macros)
+
+| Config | Stdcell | Macros | Die |
+|--------|---------|--------|-----|
+| NR=2 CIC-only | ~1.34 mm² | 0.41 mm² | **~2.50 mm²** |
+| NR=2 TDM CIC | ~1.32 mm² | 0.41 mm² | **~2.47 mm²** |
+| NR=4 CIC-only | ~1.70 mm² | 0.52 mm² | **~3.17 mm²** |
+| NR=4 TDM CIC | ~1.65 mm² | 0.52 mm² | **~3.10 mm²** |
 
 Macros: 2× OCD 1024×8 (CPU IMEM/DMEM) + 1× OCD 512×8 (frontend buf, NR=2) or 1× FD 512×8 (NR=4).
 
