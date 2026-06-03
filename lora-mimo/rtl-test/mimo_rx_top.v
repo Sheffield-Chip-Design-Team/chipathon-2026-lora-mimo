@@ -97,6 +97,7 @@ module mimo_rx_top (
     wire [1:0]  rb_wgt_mode;
     wire        rb_w_commit_pulse;
     wire [2:0]  rb_comb_post_gain_shift;
+    wire [1:0]  rb_remod_backoff_shift;
     wire [127:0] rb_w_shadow;
     wire [127:0] rb_cal_coeff;
     wire [2:0]  rb_psram_ctrl;
@@ -277,13 +278,13 @@ module mimo_rx_top (
     );
 
     // =========================================================================
-    // Stage 3c: Energy Measurement (feeds AGC snapshot + NFE)
+    // Stage 3c: Energy Measurement (feeds AGC snapshot + coarse FW noise metric)
     // =========================================================================
-    wire [31:0] energy_sum [0:3];
     wire [15:0] energy_snap [0:3];
-    wire        energy_valid, energy_snapshot_valid;
+    wire [9:0]  noise_metric [0:3];
+    wire        energy_valid, energy_snapshot_valid, noise_metric_valid;
 
-    energy_meas u_em (
+    energy_meas_coarse u_em (
         .clk_32m     (clk),
         .rst_n       (rst_n),
         .iq_i_0 (dcr_i[0]), .iq_i_1 (dcr_i[1]),
@@ -293,12 +294,13 @@ module mimo_rx_top (
         .iq_valid    (dcr_valid),
         .sf          (rb_sf_cfg),
         .sc_lock     (sc_lock),
-        .energy_sum_0 (energy_sum[0]), .energy_sum_1 (energy_sum[1]),
-        .energy_sum_2 (energy_sum[2]), .energy_sum_3 (energy_sum[3]),
         .energy_0 (energy_snap[0]), .energy_1 (energy_snap[1]),
         .energy_2 (energy_snap[2]), .energy_3 (energy_snap[3]),
+        .noise_metric_0 (noise_metric[0]), .noise_metric_1 (noise_metric[1]),
+        .noise_metric_2 (noise_metric[2]), .noise_metric_3 (noise_metric[3]),
         .energy_valid           (energy_valid),
-        .energy_snapshot_valid  (energy_snapshot_valid)
+        .energy_snapshot_valid  (energy_snapshot_valid),
+        .noise_metric_valid     (noise_metric_valid)
     );
 
     // =========================================================================
@@ -336,36 +338,25 @@ module mimo_rx_top (
     );
 
     // =========================================================================
-    // Stage 5: Noise Floor Estimator (feeds NW-MRC weight scaling)
+    // Stage 5: Coarse FW noise metric readback
+    // The legacy sigma2 register path is temporarily repurposed to expose the
+    // zero-extended per-branch coarse noise metric to firmware.
     // =========================================================================
     wire [15:0] sigma2_hw [0:3];
-    wire [15:0] sigma2_active [0:3];
     wire        sigma2_valid;
-    wire [7:0]  n_updates_nfe;
-    wire        noise_sample_en;   // driven by packet_ctrl_fsm
+    wire        noise_sample_en;   // driven by packet_ctrl_fsm; retained for FW timing/IRQ use
 
-    noise_floor_est u_nfe (
-        .clk_32m    (clk),
-        .rst_n      (rst_n),
-        .energy_sum_0 (energy_sum[0]), .energy_sum_1 (energy_sum[1]),
-        .energy_sum_2 (energy_sum[2]), .energy_sum_3 (energy_sum[3]),
-        .noise_sample_en   (noise_sample_en),
-        .sf                (rb_sf_cfg),
-        .noise_alpha_shift (rb_noise_alpha_shift),
-        .sigma2_sw_0 (rb_sigma2_sw[63:48]),
-        .sigma2_sw_1 (rb_sigma2_sw[47:32]),
-        .sigma2_sw_2 (rb_sigma2_sw[31:16]),
-        .sigma2_sw_3 (rb_sigma2_sw[15:0]),
-        .sigma2_commit     (rb_sigma2_commit),
-        .sigma2_src        (rb_sigma2_src),
-        .agc_gain_changed  (1'b0),    // driven by AGC firmware via reg write; tie low for HW-only mode
-        .sigma2_hw_0 (sigma2_hw[0]),  .sigma2_hw_1 (sigma2_hw[1]),
-        .sigma2_hw_2 (sigma2_hw[2]),  .sigma2_hw_3 (sigma2_hw[3]),
-        .sigma2_active_0 (sigma2_active[0]), .sigma2_active_1 (sigma2_active[1]),
-        .sigma2_active_2 (sigma2_active[2]), .sigma2_active_3 (sigma2_active[3]),
-        .sigma2_valid  (sigma2_valid),
-        .n_updates     (n_updates_nfe)
-    );
+    assign sigma2_hw[0] = {6'd0, noise_metric[0]};
+    assign sigma2_hw[1] = {6'd0, noise_metric[1]};
+    assign sigma2_hw[2] = {6'd0, noise_metric[2]};
+    assign sigma2_hw[3] = {6'd0, noise_metric[3]};
+
+    reg sigma2_valid_r;
+    always @(posedge clk or negedge rst_n)
+        if (!rst_n)              sigma2_valid_r <= 1'b0;
+        else if (noise_metric_valid) sigma2_valid_r <= 1'b1;
+
+    assign sigma2_valid = sigma2_valid_r;
 
     // =========================================================================
     // Stage 6: Weight Generation FSM
@@ -566,11 +557,15 @@ module mimo_rx_top (
     // During REPLAY: combiner processes PSRAM replay IQ → normal remod path.
     // =========================================================================
     wire psram_silence = psram_buf_active && !psram_replay_active_w;
+    wire signed [7:0] remod_in_i = psram_silence ? 8'sd0 :
+                                   (active_mode[0] ? comb_y_i : ($signed(comb_y_i) >>> rb_remod_backoff_shift));
+    wire signed [7:0] remod_in_q = psram_silence ? 8'sd0 :
+                                   (active_mode[0] ? comb_y_q : ($signed(comb_y_q) >>> rb_remod_backoff_shift));
     sd_remod u_remod (
         .clk_32m  (clk),
         .rst_n    (rst_n),
-        .in_i     (psram_silence ? 8'sd0 : comb_y_i),
-        .in_q     (psram_silence ? 8'sd0 : comb_y_q),
+        .in_i     (remod_in_i),
+        .in_q     (remod_in_q),
         .in_valid (psram_silence ? 1'b0  : comb_y_valid),
         .en       (1'b1),
         .out_i    (REMOD_A_I),
@@ -715,6 +710,7 @@ module mimo_rx_top (
         .wgt_mode        (rb_wgt_mode),
         .w_commit_pulse  (rb_w_commit_pulse),
         .comb_post_gain_shift(rb_comb_post_gain_shift),
+        .remod_backoff_shift(rb_remod_backoff_shift),
         .w_shadow        (rb_w_shadow),
         .cal_coeff       (rb_cal_coeff),
         .psram_ctrl      (rb_psram_ctrl),
