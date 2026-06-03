@@ -4,6 +4,34 @@
 **Baseline:** NR=2, PicoRV32IM, HW weight_gen, TDM CIC (no FIR), ser-IQ mrc_combiner  
 **Baseline die (65% eff. density):** ~2.43 mm² stdcell ~1,167k µm², macros 0.41 mm²
 
+### Measured top-level (job 1249, AS cells, NR=4 CIC-only, ser-IQ mrc)
+
+Full top-level synthesis of current `mimo_rx_top.v` (NR=4, 4× `sd_decimator_cic_only`, HW weight_gen, ser-IQ `mrc_combiner`, `energy_meas_coarse`, no NFE):
+
+| Block | µm² |
+|---|---|
+| PicoRV32 core (incl. mul/div) | 286,493 |
+| training_acc | 139,558 |
+| weight_gen | 138,649 |
+| sc_detector | 112,631 |
+| reg_bank | 99,306 |
+| mrc_combiner (ser-IQ) | 97,632 |
+| sd_decimator_cic_only (×1 shown; ×4 total) | 74,940 × 4 = 299,760 |
+| energy_meas_coarse | 68,394 |
+| dc_removal | 50,009 |
+| psram_buf_ctrl | 46,466 |
+| packet_ctrl_fsm | 32,987 |
+| sd_remod | 29,262 |
+| picorv32_wrap glue | 22,448 |
+| frontend_buf_ctrl | 17,502 |
+| spi_slave | 17,472 |
+| mimo_rx_top glue | 12,052 |
+| spi_master | 10,241 |
+| irq_ctrl + ahb_bus | 5,036 |
+| **Total stdcell (NR=4)** | **1,598,073 µm²** |
+
+NR=2 estimate (halve NR-dependent blocks): ~1,167k µm² (see per-block table above).
+
 All synthesis figures AS cells (gf180mcu_as_sc_mcu7t3v3) unless noted.  
 ✓ = measured   ~ = estimated from planning analysis
 
@@ -29,7 +57,7 @@ These are independent of the choices above and can be stacked.
 | # | Block | Cut | Stdcell saving | Measured? | Prerequisite | Risk |
 |---|---|---|---|---|---|---|
 | 5 | ~~noise_floor_est~~ | ~~Remove entirely~~ | ~~−34k µm²~~ | **Already done** | NFE (`noise_floor_est.v`) is not instantiated in `mimo_rx_top.v` — cut already taken. sigma2 path is energy_meas_coarse → noise_metric → reg_bank directly. | — |
-| 6 | energy_meas_coarse | Remove entirely | −70k µm² | ✓ (baseline) | See removal notes below. **Only viable if PicoRV32 is present** — see per-branch AGC note. | Medium-High |
+| 6 | energy_meas_coarse | Remove entirely | −70k µm² | ✓ (baseline) | See removal notes below. Per-branch AGC via SX1302 branch-cycling (see [per-branch-rssi-via-sx1302.md](per-branch-rssi-via-sx1302.md)) — **zero new hardware, works without PicoRV32**. | **Low** |
 | 7 | mrc_combiner | 16-bit → 12-bit weights (Option B) | ~−30k µm² | ~ | Narrow weight_gen output ports + reg_bank W shadow | Low — 12-bit gives 72 dB weight SNR |
 | 8 | ~~DMEM SRAM~~ | ~~OCD 1024×8 → OCD 512×8~~ | — | — | ~~−58k µm² macro~~ | **Deprioritised — do not resize** |
 | 9 | dc_removal | Remove entirely | ~−25k µm² | ~ | Confirm ADC DC offset acceptable | Low for AC-coupled RF path |
