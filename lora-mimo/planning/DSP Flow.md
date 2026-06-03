@@ -47,7 +47,7 @@ Two operating modes share the same hardware:
 | Stage | Block | Input | Output | Rate | Mode |
 | --- | --- | --- | --- | --- | --- |
 | 1 | SX1257 ΣΔ ADC (×4) | RF signal at each antenna | 1-bit I + 1-bit Q × 4 | 32 MS/s | All |
-| 2 | ΣΔ Decimator — CIC + FIR (×4) | 1-bit I+Q × 4 | int8 complex × 4 | **125 kS/s – 1 MS/s** | All |
+| 2 | ΣΔ Decimator — CIC-only (×4) | 1-bit I+Q × 4 | int8 complex × 4 | **250 kS/s** (both BW modes) | All |
 | 3 | DC Removal (×4) | Full-precision complex × 4 | DC-removed complex × 4 | f_s | All |
 | 4 | Frontend Buffer Controller | DC-removed samples | current + M-delayed samples per branch | f_s | Mode 1 |
 | 5 | SC Preamble Detector | current + delayed samples | `sc_lock`, `timing_ref` | per 2 sym | Mode 1 |
@@ -85,12 +85,15 @@ Programmable CIC filter decimates the 32 MS/s bitstream to match the LoRa bandwi
 
 | BW Selection | Ratio (R) | Sample Rate (f_s) | decim_ratio | Notes |
 | --- | --- | --- | --- | --- |
-| 125 kHz | 256× | 125 kS/s | 0 | 1× Nyquist |
-| 250 kHz | 128× | 250 kS/s | 1 | 1× Nyquist |
-| 500 kHz | 64× | 500 kS/s | 2 | 1× Nyquist |
-| 500 kHz (2×) | 32× | 1 MS/s | 3 | 2× oversampled; debug / wideband capture |
+| 125 kHz | 128× | 250 kS/s | 1 | 2× oversampled; sd_remod+SX1302 filter rejects extra noise BW |
+| 250 kHz | 128× | 250 kS/s | 1 | 1× Nyquist; same firmware setting as 125 kHz |
+| ~~500 kHz~~ | ~~64×~~ | ~~500 kS/s~~ | ~~2~~ | **Not supported** — CIC-only SQNR 9.6 dB at R=64; requires FIR |
 
-All ratios are power-of-2 — samples/symbol = 2^SF exactly for all SF and all BW settings (M is BW-independent). A 32-tap FIR compensation filter corrects sinc frequency droop. The entire downstream pipeline is clock-gated by the `iq_valid` strobe.
+Both supported BW modes use `decim_ratio=1` (R=128). The downstream LoRa demodulator is
+off-chip (SX1302); the `sd_remod` always outputs a 32 MHz ΣΔ bitstream so the internal
+IQ sample rate is transparent to the SX1302. The SX1257 analog IF filter bandlimits the
+signal before the ΣΔ ADC, and the SX1302 channel filter rejects any residual alias noise.
+No FIR is required. The entire downstream pipeline is clock-gated by the `iq_valid` strobe.
 
 See [ΣΔ Decimator](blocks/ΣΔ%20Decimator.md).
 

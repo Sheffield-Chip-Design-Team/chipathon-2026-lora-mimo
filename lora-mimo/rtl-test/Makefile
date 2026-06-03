@@ -10,9 +10,11 @@ VVP       = vvp
 IFLAGS    = -g2012
 
 # Source files for the DSP chain (no PicoRV32)
-DSP_SRCS  = dc_removal.v frontend_buf_ctrl.v energy_meas.v noise_floor_est.v \
+# energy_meas_coarse replaces energy_meas; noise_floor_est removed from design.
+# sd_decimator_cic_only replaces sd_decimator (old FIR version).
+DSP_SRCS  = dc_removal.v frontend_buf_ctrl.v energy_meas_coarse.v \
             sc_detector.v training_acc.v weight_gen.v mrc_combiner.v sd_remod.v
-DSP_SRCS_SD = $(DSP_SRCS) sd_decimator.v
+DSP_SRCS_SD = $(DSP_SRCS) sd_decimator_cic_only.v
 
 # -----------------------------------------------------------------------
 # DSP chain end-to-end testbench (Verilator)
@@ -70,14 +72,14 @@ obj_dir_dsp_chain_real_probe_osr256/Vtb_dsp_chain_real: tb_dsp_chain_real_probe_
 sim_remod_decim_const: obj_dir_const/Vtb_remod_decim_const
 	$<
 
-obj_dir_const/Vtb_remod_decim_const: tb_remod_decim_const.v sd_remod.v sd_decimator.v
+obj_dir_const/Vtb_remod_decim_const: tb_remod_decim_const.v sd_remod.v sd_decimator_cic_only.v
 	$(VERILATOR) $(VFLAGS) --Mdir obj_dir_const \
 	    --top-module tb_remod_decim_const $^
 
 # -----------------------------------------------------------------------
 # Energy / noise-floor testbench (existing)
 # -----------------------------------------------------------------------
-DSP_SRCS2 = energy_meas.v noise_floor_est.v
+DSP_SRCS2 = energy_meas_coarse.v
 
 .PHONY: sim_dsp
 
@@ -95,7 +97,7 @@ tb_dsp.vvp: tb_dsp.v $(DSP_SRCS2)
 sim_sqnr: tb_sqnr.vvp
 	$(VVP) $<
 
-tb_sqnr.vvp: tb_sqnr.v sd_decimator.v
+tb_sqnr.vvp: tb_sqnr.v sd_decimator_cic_only.v
 	$(IVERILOG) $(IFLAGS) -o $@ $^
 
 # -----------------------------------------------------------------------
