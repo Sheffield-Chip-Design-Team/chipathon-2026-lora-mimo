@@ -29,7 +29,7 @@ These are independent of the choices above and can be stacked.
 | # | Block | Cut | Stdcell saving | Measured? | Prerequisite | Risk |
 |---|---|---|---|---|---|---|
 | 5 | ~~noise_floor_est~~ | ~~Remove entirely~~ | ~~−34k µm²~~ | **Already done** | NFE (`noise_floor_est.v`) is not instantiated in `mimo_rx_top.v` — cut already taken. sigma2 path is energy_meas_coarse → noise_metric → reg_bank directly. | — |
-| 6 | energy_meas_coarse | Remove entirely | −70k µm² | ✓ (baseline) | See removal notes below. Removes both energy measurement (AGC) AND noise_metric (sigma2). They are the same block — cannot split. | Medium — AGC blind without it |
+| 6 | energy_meas_coarse | Remove entirely | −70k µm² | ✓ (baseline) | See removal notes below. **Only viable if PicoRV32 is present** — see per-branch AGC note. | Medium-High |
 | 7 | mrc_combiner | 16-bit → 12-bit weights (Option B) | ~−30k µm² | ~ | Narrow weight_gen output ports + reg_bank W shadow | Low — 12-bit gives 72 dB weight SNR |
 | 8 | ~~DMEM SRAM~~ | ~~OCD 1024×8 → OCD 512×8~~ | — | — | ~~−58k µm² macro~~ | **Deprioritised — do not resize** |
 | 9 | dc_removal | Remove entirely | ~−25k µm² | ~ | Confirm ADC DC offset acceptable | Low for AC-coupled RF path |
@@ -66,7 +66,17 @@ For NW-MRC, firmware needs per-branch noise estimates σ²_j. Without `energy_me
 
 **For co-located antennas** (both NR=2 antennas on the same PCB), LNA and ADC thermal noise is nearly identical across branches. Standard MRC is optimal when σ²_j are equal — the NW-MRC gain only materialises when one branch is significantly noisier than the other (e.g., near an interference source).
 
-**Recommendation:** If deployment is co-located antennas in a controlled environment, remove `energy_meas_coarse` and use standard MRC. If one antenna may be near interference (distributed deployment, external antenna), keep `energy_meas_coarse` for NW-MRC capability.
+**Per-branch AGC dependency — critical constraint:**
+
+`energy_meas_coarse` is the **only hardware source of per-branch signal level**. Neither the SX1302 nor the SX1257 provides per-branch RSSI:
+- SX1302 RSSI: combined (post-MRC) output only — cannot drive per-SX1257 gain control
+- SX1257: no RSSI register (confirmed from datasheet v1.2)
+
+Without per-branch energy, all SX1257 gains must be set equally (fixed or from combined RSSI), which degrades performance when branch signal levels differ.
+
+**Removal is safe only when PicoRV32 is present** and firmware uses live IQ polling or PSRAM readback for per-branch energy. In CPU-less configurations, `energy_meas_coarse` must be kept.
+
+**Recommendation:** If deployment is co-located antennas with PicoRV32 present, remove `energy_meas_coarse` and use live IQ register polling for AGC (see [live-iq-agc-calibration.md](live-iq-agc-calibration.md)). If CPU-less operation or distributed antennas are required, keep the block.
 
 ### Software energy measurement via PSRAM — feasibility note
 
