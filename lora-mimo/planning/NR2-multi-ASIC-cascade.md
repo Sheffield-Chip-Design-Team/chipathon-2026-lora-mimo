@@ -28,7 +28,7 @@
 | weight_gen | Yes | 138,115 | 105,198 |
 | mrc_combiner | Yes | 121,366 | 107,394 |
 | sc_detector | No (NR=1) | 111,608 | 111,608 |
-| reg_bank | Partial | 98,648 | ~80,000 |
+| reg_bank | Partial | 99,034 | 90,247 |
 | energy_meas | No | 70,383 | 70,383 |
 | psram_buf_ctrl | No | 46,475 | 46,475 |
 | noise_floor_est | No | 33,461 | 33,461 |
