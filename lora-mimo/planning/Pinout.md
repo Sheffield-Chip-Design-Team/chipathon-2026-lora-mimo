@@ -1,12 +1,12 @@
 # ASIC Pinout
 
-GF180MCU MIMO ASIC — logical pad list. Physical pad numbers and positions are not yet assigned (pending floorplan). Total: **33 pads** (30 signal + 3 supply/ground). Chipathon allocation target is 33 pads; a condensed 28-pad fallback is documented in the pad budget summary.
+GF180MCU MIMO ASIC — logical pad list. Physical pad numbers and positions are not yet assigned (pending floorplan). Total: **44 pads** (38 signal + 6 supply/ground).
 
 **Related:** [System Architecture](System%20Architecture.md)
 
 ---
 
-## Signal pads (30)
+## Signal pads (38)
 
 All signal pads use **GF180 5V-capable IO cells** from the chipathon padring library, operated on a **3.3V `VDD_IO` rail** to match the SX1257/SX1302/RPi board interfaces. Core logic runs at **3.3V**, so no internal level translation is required between the core and SRAM domains.
 
@@ -31,12 +31,16 @@ All signal pads use **GF180 5V-capable IO cells** from the chipathon padring lib
 |---|---|---|---|
 | `IQ_CLK` | in | PCB TCXO clock buffer output | 32 MHz master clock. Shared reference: same buffer also drives SX1257_1–4 XTB (pin 8) via separate PCB traces. This pad is the ASIC core clock. |
 
-### ΣΔ re-mod output to SX1302 (2 pads, output)
+### ΣΔ re-mod outputs to SX1302 (4 pads, output)
+
+Two independent ΣΔ re-mod outputs. Radio A carries the primary MRC combined stream. Radio B carries a second stream — used in the 3-chip cascade topology as the second feeder input to the combiner ASIC, or as a passthrough/bypass output for diagnostics.
 
 | Pad name | Dir | Connected to | Description |
 |---|---|---|---|
-| `REMOD_A_I` | out | SX1302 Radio A I input | 1-bit ΣΔ MRC combined stream |
-| `REMOD_A_Q` | out | SX1302 Radio A Q input | 1-bit ΣΔ MRC combined stream Q |
+| `REMOD_A_I` | out | SX1302 Radio A I input | 1-bit ΣΔ MRC combined stream (primary) |
+| `REMOD_A_Q` | out | SX1302 Radio A Q input | 1-bit ΣΔ MRC combined stream Q (primary) |
+| `REMOD_B_I` | out | SX1302 Radio B I input / cascade combiner | 1-bit ΣΔ second stream I |
+| `REMOD_B_Q` | out | SX1302 Radio B Q input / cascade combiner | 1-bit ΣΔ second stream Q |
 
 > **SX1302 clock:** SX1302 CLK_IN is driven by SX1257_1 CLK_OUT (pin 10) directly on the PCB — no ASIC pad required. See board-level pin dispositions in [System Architecture](System%20Architecture.md).
 
@@ -81,45 +85,48 @@ Device selection uses a board-level **74HC138 3-to-8 decoder**: the ASIC drives 
 
 > **Broadcast writes removed.** With individual CS pads the SPI master could assert multiple lines simultaneously to write the same register to several SX1257s in one transaction. With the decoder only one device is selectable at a time; multi-device config requires sequential transactions (4 × ~1.6 µs at 10 MHz — negligible for startup).
 
-### Condensed SPI option (−3 pads, 30-pad fallback)
+### JTAG (5 pads, dedicated)
 
-If the chipathon pad budget cannot reach 33, the two SPI buses can share their data and clock lines by installing **0Ω PCB resistors** bridging `HOST_SCK`↔`SX_SCK`, `HOST_MOSI`↔`SX_MOSI`, and `HOST_MISO`↔`SX_MISO`. The dedicated host slave pads are renamed back to `SPI_MOSI`/`SPI_MISO`/`SPI_SCK`/`HOST_CS`, and `SX_MOSI`/`SX_MISO`/`SX_SCK` are removed. The remaining pad list (10 → 7 SPI+CS pads) reduces the signal total by 3 (30 → 27) and the grand total to 30.
+Dedicated JTAG pads — always available, no mode-switch required, no conflict with GPIO or QSPI. Connects to the PicoRV32 RISC-V debug module (halt, step, breakpoint, register/memory inspection). A custom `DEBUG_REG` DR instruction additionally allows direct register bank read/write via JTAG scan, independent of the SPI slave interface.
 
-**Bus-conflict rule for condensed mode:** the ASIC must never drive `SPI_MOSI` or `SPI_SCK` while `HOST_CS` is asserted, and must never accept a host transaction while a SX1257 or QSPI transaction is in progress (`BUSY=1`). This is enforced through hardware output-enable gating: `SPI_MOSI`/`SPI_SCK` output enables are masked by `!HOST_CS`.
+`JTAG_TRST` provides an asynchronous TAP reset without requiring the TMS five-clock reset sequence — cleaner reset in automated test environments.
+
+| Pad name | Dir | Connected to | Description |
+|---|---|---|---|
+| `JTAG_TCK` | in | JTAG probe / RPi GPIO | JTAG clock. Max 8 MHz |
+| `JTAG_TMS` | in | JTAG probe / RPi GPIO | JTAG mode select |
+| `JTAG_TDI` | in | JTAG probe / RPi GPIO | JTAG data in |
+| `JTAG_TDO` | out | JTAG probe / RPi GPIO | JTAG data out |
+| `JTAG_TRST` | in | JTAG probe / RPi GPIO (pull-up) | Async TAP reset, active-low. Pull to VDD_IO via 10 kΩ on PCB; assert low only when intentionally resetting TAP. |
 
 ### GPIO bank — flexible mux (8 pads, bidirectional)
 
-Eight GPIO pads split into two independent 4-pin nibbles. Each nibble is configured via the `IO_MUX_CTRL` register independently as GPIO, QSPI data, or JTAG. Only one QSPI instance exists; asserting QSPI on both nibbles simultaneously is invalid (treated as all-GPIO).
+Eight GPIO pads split into two independent 4-pin nibbles. Each nibble is configured via the `IO_MUX_CTRL` register independently as GPIO or QSPI. JTAG is now on dedicated pads and is no longer a GPIO mux option.
 
 **`IO_MUX_CTRL` register (`0x07`):**
 
 | Field | Bits | Encoding |
 |---|---|---|
-| `UPPER_MODE` | [3:2] | `00`=GPIO, `01`=QSPI, `10`=JTAG, `11`=reserved |
-| `LOWER_MODE` | [1:0] | `00`=GPIO, `01`=QSPI, `10`=JTAG, `11`=reserved |
+| `UPPER_MODE` | [3:2] | `00`=GPIO, `01`=QSPI, `10`–`11`=reserved |
+| `LOWER_MODE` | [1:0] | `00`=GPIO, `01`=QSPI, `10`–`11`=reserved |
 
 **Valid mode combinations:**
 
 | `UPPER_MODE` | `LOWER_MODE` | Result |
 |---|---|---|
 | GPIO | GPIO | 8× GPIO |
-| GPIO | QSPI | QSPI IO[3:0] on lower + 4× GPIO upper |
-| QSPI | GPIO | QSPI IO[3:0] on upper + 4× GPIO lower |
-| GPIO | JTAG | JTAG on lower + 4× GPIO upper |
-| JTAG | GPIO | JTAG on upper + 4× GPIO lower |
-| JTAG | QSPI | QSPI IO[3:0] on lower + JTAG on upper |
-| QSPI | JTAG | QSPI IO[3:0] on upper + JTAG on lower |
+| GPIO | QSPI | QSPI IO[3:0] on lower nibble + 4× GPIO upper |
+| QSPI | GPIO | QSPI IO[3:0] on upper nibble + 4× GPIO lower |
 | QSPI | QSPI | **Invalid** → hardware forces both nibbles to GPIO |
-| JTAG | JTAG | **Invalid** → hardware forces both nibbles to GPIO |
 
 **Pin function by mode:**
 
-| Pad | GPIO mode | QSPI mode | JTAG mode |
-|---|---|---|---|
-| `GPIO[n+0]` | bidir GPIO | QSPI IO0 bidir | TCK input |
-| `GPIO[n+1]` | bidir GPIO | QSPI IO1 bidir | TMS input |
-| `GPIO[n+2]` | bidir GPIO | QSPI IO2 bidir | TDI input |
-| `GPIO[n+3]` | bidir GPIO | QSPI IO3 bidir | TDO output |
+| Pad | GPIO mode | QSPI mode |
+|---|---|---|
+| `GPIO[n+0]` | bidir GPIO | QSPI IO0 bidir |
+| `GPIO[n+1]` | bidir GPIO | QSPI IO1 bidir |
+| `GPIO[n+2]` | bidir GPIO | QSPI IO2 bidir |
+| `GPIO[n+3]` | bidir GPIO | QSPI IO3 bidir |
 
 Where `n=0` for the lower nibble (`GPIO[3:0]`) and `n=4` for the upper nibble (`GPIO[7:4]`).
 
@@ -127,15 +134,19 @@ Where `n=0` for the lower nibble (`GPIO[3:0]`) and `n=4` for the upper nibble (`
 
 **IRQ:** The interrupt output is software-assigned to any GPIO pin via `GPIO_IRQ_SEL[2:0]` in the `IRQ_CTRL` register (`0x08`). The selected pin's output-enable is asserted by the IRQ controller regardless of `GPIO_DIR`. Default after reset: `GPIO[0]`. The RPi should configure the chosen GPIO pin as a rising-edge input.
 
-**SE2435L front-end control:** SE2435L_3/4 CPS and CTX signals are driven from any available GPIO pins in the non-JTAG, non-QSPI nibble. See [SE2435L Front-End Module](blocks/SE2435L%20Front-End%20Module.md).
+**SE2435L front-end control:** SE2435L_3/4 CPS and CTX signals are driven from any available GPIO pins. With JTAG on dedicated pads, all 8 GPIO pins are available simultaneously alongside QSPI (one nibble QSPI + one nibble GPIO).
+
+**Suggested GPIO assignment:**
+
+| Pin | Suggested use |
+|---|---|
+| `GPIO[0]` | IRQ output to RPi (default after reset) |
+| `GPIO[1]` | SE2435L_3 CTX |
+| `GPIO[2]` | SE2435L_4 CTX |
+| `GPIO[3]` | SE2435L_3/4 CPS (shared) |
+| `GPIO[7:4]` | QSPI IO[3:0] (APS6404L SIO lines) |
 
 **Register map:** `GPIO_DIR` (`0x04`), `GPIO_OUT` (`0x05`), `GPIO_IN` (`0x06`), `IO_MUX_CTRL` (`0x07`), `IRQ_CTRL` (`0x08`).
-
-**JTAG mode switch procedure:**
-1. RPi writes `IO_MUX_CTRL` to set the target nibble to `10` (JTAG).
-2. RPi GPIO connected to the IRQ pin reconfigured as input/high-Z before JTAG mode takes effect.
-3. Probe drives TCK, TMS, TDI; ASIC drives TDO.
-4. On debug exit: RPi writes `IO_MUX_CTRL` nibble back to `00` (GPIO); firmware resumes GPIO control.
 
 ### Chip reset (1 pad, input)
 
@@ -145,51 +156,58 @@ Where `n=0` for the lower nibble (`GPIO[3:0]`) and `n=4` for the upper nibble (`
 
 ---
 
-## Supply and ground pads (3 pads)
+## Supply and ground pads (6 pads)
+
+Three supply and three ground pads provide adequate current return paths and reduce IR drop. VDD_CORE pads should be placed near the highest switching-current blocks (ΣΔ decimators, PicoRV32). GND pads should be distributed to cover the IQ data input side and the digital core separately.
 
 | Pad name | Voltage | Count | Notes |
 |---|---|---|---|
-| `VDD_IO` | 3.3V | 1 | Powers GF180 5V-capable padring cells in 3.3V operation. External SX1257 SPI, IQ data, and SX1302 interfaces are 3.3V CMOS. |
-| `VDD_CORE` | 3.3V | 1 | Core digital + SRAM supply. Single pad — IR drop must be verified in floorplan. |
-| `GND` | 0V | 1 | Ground. Single pad — placement should favour the highest switching-current region. |
+| `VDD_IO` | 3.3V | 2 | Powers GF180 5V-capable padring cells. Place one near IQ data pads, one near SPI/GPIO pads. |
+| `VDD_CORE` | 3.3V | 1 | Core digital + SRAM supply. |
+| `GND` | 0V | 3 | Ground. Distribute around perimeter — one near IQ data inputs, one near digital core, one near SPI/JTAG pads. |
 
 ---
 
 ## Pad budget summary
 
-### Full (33 pads — target, requires 33-pad allocation)
+### Full (44 pads)
 
 | Group | Pads | Notes |
 |---|---|---|
-| RX data (`IQ_DATA_I/Q[3:0]`) | 8 | |
+| RX data (`IQ_DATA_I/Q[3:0]`) | 8 | NR=4 capable |
 | Clock (`IQ_CLK`) | 1 | |
-| ΣΔ re-mod (`REMOD_A_I`, `REMOD_A_Q`) | 2 | |
+| ΣΔ re-mod A (`REMOD_A_I`, `REMOD_A_Q`) | 2 | Primary MRC output |
+| ΣΔ re-mod B (`REMOD_B_I`, `REMOD_B_Q`) | 2 | Cascade / Radio B output — **new** |
 | SPI slave — host (`HOST_MOSI`, `HOST_MISO`, `HOST_SCK`, `HOST_CS`) | 4 | |
-| SPI master + CS (`SX_MOSI`, `SX_MISO`, `SX_SCK`, `CS_A[2:0]`) | 6 | `CS_A[2]` added vs prior rev |
-| GPIO bank (`GPIO[7:0]`) | 8 | Replaces 4-pad JTAG/GPIO block |
+| SPI master + CS (`SX_MOSI`, `SX_MISO`, `SX_SCK`, `CS_A[2:0]`) | 6 | |
+| JTAG (`JTAG_TCK`, `JTAG_TMS`, `JTAG_TDI`, `JTAG_TDO`, `JTAG_TRST`) | 5 | Dedicated — **new**; removed from GPIO mux |
+| GPIO bank (`GPIO[7:0]`) | 8 | GPIO/QSPI only (JTAG mux removed) |
 | `RESETB` | 1 | |
-| **Signal subtotal** | **30** | |
-| `VDD_IO` (3.3V) | 1 | |
-| `VDD_CORE` (3.3V) | 1 | |
-| `GND` | 1 | |
-| **Supply/ground subtotal** | **3** | |
-| **Total** | **33** | |
+| **Signal subtotal** | **37** | |
+| `VDD_IO` ×2 | 2 | **+1 vs 33-pad plan** |
+| `VDD_CORE` ×1 | 1 | |
+| `GND` ×3 | 3 | **+2 vs 33-pad plan** |
+| **Supply/ground subtotal** | **6** | |
+| **Total** | **43** | One pad spare vs 44 allocation |
 
-### Condensed SPI fallback (30 pads — if allocation capped at 30)
+> One pad remains spare within the 44-pad allocation. Reserved for future use (e.g. SX1257 shared RESET, second VDD_CORE, or cascade lock-detect GPIO).
 
-Remove `SX_MOSI`, `SX_MISO`, `SX_SCK`; bridge to host SPI pads via PCB 0Ω resistors. Hardware OE gating required (see condensed SPI option section above). `CS_A[2:0]` and GPIO bank unchanged.
+### Condensed SPI fallback (40 pads — if needed)
+
+Remove `SX_MOSI`, `SX_MISO`, `SX_SCK`; bridge to host SPI pads via PCB 0Ω resistors. Hardware OE gating required. All other additions retained.
 
 | Group | Pads |
 |---|---|
-| RX data (`IQ_DATA_I/Q[3:0]`) | 8 |
-| Clock (`IQ_CLK`) | 1 |
-| ΣΔ re-mod (`REMOD_A_I`, `REMOD_A_Q`) | 2 |
+| RX data | 8 |
+| Clock | 1 |
+| ΣΔ re-mod A + B | 4 |
 | SPI shared bus (`SPI_MOSI`, `SPI_MISO`, `SPI_SCK`, `HOST_CS`, `CS_A[2:0]`) | 7 |
-| GPIO bank (`GPIO[7:0]`) | 8 |
+| JTAG (dedicated) | 5 |
+| GPIO bank | 8 |
 | `RESETB` | 1 |
-| **Signal subtotal** | **27** |
-| Supply/ground | 3 |
-| **Total** | **30** |
+| **Signal subtotal** | **34** |
+| Supply/ground | 6 |
+| **Total** | **40** |
 
 ---
 
@@ -199,24 +217,37 @@ The following signals are board-level only — no ASIC pad allocated:
 
 | Signal | Reason | Disposition |
 |---|---|---|
-| SX1257 DIO0–DIO3 (×4 devices) | 0 spare ASIC pads | PLL lock polled via `RegModeStatus` (0x11) over SPI instead |
+| SX1257 DIO0–DIO3 (×4 devices) | No ASIC pad — not worth the cost | PLL lock polled via `RegModeStatus` (0x11) over SPI instead |
 | SX1257 individual NSS (×4) | Replaced by 74HC138 decoder | ASIC drives 3-bit address `CS_A[2:0]`; decoder generates individual active-low NSS lines on the PCB |
-| SX1257 RESET (pin 9, ×4) | 0 spare ASIC pads | Decision pending: floating (POR only) or RPi GPIO |
+| SX1257 RESET (pin 9, ×4) | Candidate for the 1 spare pad | Decision pending: leave floating (POR only), RPi GPIO, or use spare ASIC pad for shared reset |
 | SX1257 CLK_IN (pin 11, ×4) | Not needed — XTB shared TCXO used for lock | Leave NC on all 4 devices |
 | SX1257 CLK_OUT (pin 10) | SX1257_1: CLK_OUT → SX1302 CLK_IN (PCB trace, no ASIC pad) | SX1257_2–4: leave NC |
-| SE2435L CTX/CPS (ant 3/4) | Covered by GPIO bank | Any available `GPIO[7:0]` pin in non-JTAG, non-QSPI nibble; see [SE2435L Front-End Module](blocks/SE2435L%20Front-End%20Module.md) |
+| SE2435L CTX/CPS (ant 3/4) | Covered by GPIO bank | `GPIO[1:3]` in non-QSPI nibble per suggested GPIO assignment above |
+
+---
+
+## Changes vs 33-pad plan
+
+| Change | Detail |
+|---|---|
+| +2 REMOD pads | Added `REMOD_B_I`, `REMOD_B_Q` for cascade topology / SX1302 Radio B |
+| +5 JTAG pads | Dedicated `JTAG_TCK/TMS/TDI/TDO/TRST` — removed from GPIO mux entirely |
+| +3 power pads | +1 `VDD_IO`, +2 `GND` — reduces IR drop risk |
+| IO_MUX_CTRL simplified | JTAG option removed; only GPIO and QSPI per nibble |
+| GPIO bank freed | All 8 GPIO available simultaneously with QSPI — no mode conflict |
+| 1 pad spare | Available for SX1257 shared RESET or second VDD_CORE |
 
 ---
 
 ## Open items
 
 - Physical pad placement / ordering around die perimeter — pending floorplan
-- **Confirm chipathon pad allocation** — target is 33; condensed SPI fallback brings this to 30 if needed
+- **Allocate the 1 spare pad** — SX1257 shared RESET is the leading candidate
 - Confirm `RESETB` is a dedicated pad vs. managed by chipathon harness (Caravel or equivalent)
-- Resolve SE2435L_3/4 CPS/CTX pin assignment within GPIO bank before PCB layout
-- Resolve SX1257 RESET (floating vs. RPi-controlled via GPIO bank) before PCB layout
-- **GPIO Mux block spec** — `IO_MUX_CTRL`, `GPIO_IRQ_SEL`, pad output-enable gating logic, and QSPI controller interface need a dedicated block document
-- **Update SPI Master block spec** — reflect `CS_A[2:0]`, 74HC138 decode table, and QSPI CLK sharing note
-- **IR drop verification required** — single VDD_CORE and single GND pad; floorplan must place power pad near highest switching-current block (ΣΔ decimators or PicoRV32) and rely on on-chip power mesh; may need decoupling capacitor cells near critical blocks
-- **Pad-library assumption** — chipathon integration documentation provides 5V-capable GF180 IO cells, not native 3.3V-only pad cells; current plan is to run those pads from a 3.3V `VDD_IO` rail for 3.3V board signaling, accepting any speed impact noted by the integration team
-- **Consider power ring strategy** — GF180MCU IO ring includes power rails; confirm whether VDD_CORE/GND pads feed a global ring or require explicit mesh routing in the core
+- Resolve SE2435L_3/4 CPS/CTX final GPIO pin assignment before PCB layout
+- **GPIO Mux block spec update** — remove JTAG mode from `IO_MUX_CTRL`; update block document
+- **JTAG TAP spec** — document `DEBUG_REG` custom DR instruction (17-bit scan: 8-bit addr + 8-bit data + R/W); update [JTAG TAP](blocks/JTAG%20TAP.md)
+- **SPI Master block spec** — reflect `CS_A[2:0]`, 74HC138 decode table, QSPI CLK sharing
+- **IR drop verification** — 1× VDD_CORE + 3× GND; floorplan must verify mesh adequacy; consider decoupling cap cells near ΣΔ decimators and PicoRV32
+- **Pad-library assumption** — chipathon integration provides 5V-capable GF180 IO cells run from 3.3V `VDD_IO` rail; confirm speed impact with integration team
+- **REMOD_B usage** — confirm sd_remod RTL exposes a second output port; update mimo_rx_top.v if not already present
