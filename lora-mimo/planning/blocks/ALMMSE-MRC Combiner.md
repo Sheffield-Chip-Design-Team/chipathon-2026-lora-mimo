@@ -74,7 +74,7 @@ Distributed antenna deployments (antennas hundreds of metres apart) are outside 
 
 **MAC structure.** Each complex MAC: `acc_re += W_re×x_i − W_im×x_q`, `acc_im += W_re×x_q + W_im×x_i`. Four complex MACs per sample.
 
-**Output headroom.** MRC coherently adds branch amplitudes. The hardware weight path now uses shift-MRC: weights are proportional to `conj(H_j)` with a shared conservative right shift and branch-count headroom. The combiner still applies a fixed ÷2 guard shift, then an optional `COMB_POST_GAIN` left shift before saturating to int8. Reset value `COMB_POST_GAIN=0` is conservative; firmware may increase it after observing output headroom. Bypass output is int8 directly, preserving the full per-branch amplitude. The AGC owns the per-branch level constraint (−3 dBFS max per branch); see AGC headroom constraint. Int8 saturation is a safety net for AGC settling transients only.
+**Output headroom.** MRC coherently adds branch amplitudes. The hardware weight path now uses shift-MRC: weights are proportional to `conj(H_j)` with a shared conservative right shift and branch-count headroom. The combiner still applies a fixed ÷2 guard shift, then an optional `COMB_POST_GAIN` left shift before saturating to int8. Reset value `COMB_POST_GAIN=0` is conservative; firmware may increase it after observing output headroom. Bypass output is int8 directly, preserving the full per-branch amplitude. A separate remod-facing right shift (`REMOD_BACKOFF_SHIFT`, register `0x37`, default `1`) is applied only on the MRC path before `sd_remod`, so remod safety does not depend on AGC alone. Int8 saturation remains a safety net for AGC settling transients only.
 
 **Accumulator saturation.** After the fixed ÷2 guard shift and optional post-combine gain, saturate to int8 bounds (±127) — do not allow 2's-complement wrap. This provides a safety net for AGC settling transients or unexpected strong signals, but should not be the normal operating condition.
 
@@ -139,74 +139,48 @@ This makes the first packet recoverable as a single-antenna packet if W arrives 
 
 ---
 
-## Area reduction analysis — 2026-05-31
+## Area reduction analysis
 
-**Current implementation:** `mrc_combiner.v`, 121 k µm² (Yosys, gf180mcu_as_sc_mcu7t3v3, TT/25°C/3.3 V).
+### Implemented — Option A: Serialised I/Q multiply (2026-06-03)
 
-### Area breakdown
+**Current implementation:** `mrc_combiner.v` — **serialised I/Q**, 2 multipliers, 11-state FSM.
 
-| Component | Approx. µm² | Notes |
+Measured area (Yosys, gf180mcu_as_sc_mcu7t3v3, TT/25°C/3.3 V, job 1247):
+
+| Config | Area (µm²) | vs 4-mul baseline |
 |---|---|---|
-| 4× 16×8 multipliers (combinatorial) | ~70 k | Core of `prod_i_next` / `prod_q_next` |
-| Variable `post_gain_shift` barrel shift (33-bit, 3-bit select) | ~15 k | Lines 74–75 in RTL |
-| 26-bit accumulators + adders | ~20 k | `acc_i`, `acc_q`, final pipeline register |
-| MUX pipeline registers + FSM control | ~15 k | 8 dedicated W/X latch regs, state machine |
+| 4-multiplier baseline (original) | 121,366 | — |
+| Ser-IQ NR=4 (current) | **97,601** | **−23,765 (−19.6%)** |
+| Ser-IQ NR=2 (const-prop) | **84,315** | **−23,079 (−21.5%)** |
 
-The 4 multipliers are the minimum needed to compute one complex multiply in a single clock cycle:
-`prod_i = w_re×x_i − w_im×x_q` and `prod_q = w_re×x_q + w_im×x_i`.
-The block already TDMs across 4 antennas (7 states per sample, 7 cycles used of 256-cycle budget at R=256).
+Each complex MAC split into two sub-cycles:
+- Sub-cycle 1 (`w_re`): `mul_i = w_re × x_i`, `mul_q = w_re × x_q` → save `a_r`, `c_r`
+- Sub-cycle 2 (`w_im`): `mul_i = w_im × x_q`, `mul_q = w_im × x_i` (inputs swapped)
+  - `prod_i = a_r − mul_i`, `prod_q = c_r + mul_q`
 
-### Cut options
+State count: 11 (vs 7). 11 cycles/sample used of 256-cycle budget at R=256.
 
-**Option A — Serialise I and Q (4 muls → 2 muls, ~−35 k, low effort)**
-
-Compute I and Q in sequential sub-cycles instead of in parallel:
-- Sub-step 1: `w_re×x_i` and `w_re×x_q` → latch both
-- Sub-step 2: `w_im×x_q` and `w_im×x_i` → form `prod_i = p1−p2`, `prod_q = p3+p4`
-
-2 cycles per antenna × 4 antennas = 8 cycles total (vs 6 currently). Budget remains 256 cycles.
-Saves 2 of the 4 multipliers. Straightforward RTL change; no algorithmic impact.
-**Estimated result: ~86 k µm².**
+### Measured cut options (not implemented)
 
 **Option B — Reduce weight precision 16-bit → 12-bit (~−30 k, medium effort)**
 
-12×8 multipliers instead of 16×8. Weight quantisation noise is negligible for LoRa:
-12-bit gives 72 dB SNR on weights; channel estimation noise dominates well before that.
-Requires `weight_gen.v` output ports narrowed to 12-bit and all downstream register map widths adjusted.
-Can be combined with Option A.
-**Estimated result (A+B): ~60 k µm².**
+12×8 multipliers instead of 16×8. Weight quantisation noise negligible for LoRa.
+Requires `weight_gen.v` output ports narrowed to 12-bit and register map widths adjusted.
+**Estimated result (A+B): ~60–67 k µm².**
 
-**Option C — Fix `post_gain_shift` at synthesis time (~−12 k, trivial)**
+**Option C — Fix `post_gain_shift` at synthesis time (measured: −4.3 k NR=2)**
 
-The 3-bit variable barrel shift (COMB_POST_GAIN) synthesises to an expensive 33-bit MUX tree.
-If the gain is fixed at compile time (e.g., always 2), this is free wiring.
-Only worthwhile if runtime adjustment of post-combine gain is not needed.
-**Estimated result (C alone): ~109 k µm².**
+Measured saving is only 4.3 k µm² — not worth the register-map change.
 
 **Option D — CORDIC rotation (~−50 k net, high effort)**
 
-Replace all 4 multipliers with a CORDIC rotator (shifts + adds only).
-~16 iterations for 12-bit precision; 32 CORDIC cycles × 4 antennas = 128 cycles — fits in budget.
-Eliminates ~70 k of multiplier area; adds ~20 k of CORDIC control/shift logic.
-Most aggressive option; requires careful fixed-point validation of combining gain.
-**Estimated result: ~70 k µm².**
+Not recommended for this tapeout — high implementation risk relative to saving.
 
-**Option E — Share multiplier with `training_acc` (~−35 k from training_acc side)**
+**Option E — Share multiplier with `training_acc`**
 
-`training_acc` uses 4× 8×8 multipliers during preamble only. `mrc_combiner` uses 4× 16×8 during data phase.
-These operate at non-overlapping times. A shared 16×8 unit (with narrower mode for training) would
-eliminate `training_acc`'s dedicated multipliers. Saves area on the `training_acc` side rather than here.
-Moderate complexity; cross-module interface change.
-
-### Recommendation
-
-**Best near-term cut: A + C** — serialise I/Q and fix post_gain_shift. Combined saving ~47 k, effort is low,
-no algorithmic risk. Brings mrc_combiner from 121 k to ~74 k µm².
-
-**Further reduction:** Add B (12-bit weights) for a total of ~60 k — roughly half the current area — at
-the cost of a weight_gen port change. Still no algorithmic degradation for LoRa.
-
-**Not recommended for this tapeout:** D (CORDIC) — high implementation risk relative to the saving.
+`training_acc` uses 4× 8×8 multipliers during preamble only; `mrc_combiner` uses 2× 16×8 during data phase.
+Non-overlapping. A shared 16×8 unit would eliminate `training_acc`'s dedicated multipliers.
+Saves area on the `training_acc` side. Moderate complexity; cross-module interface change.
 
 ---
 
