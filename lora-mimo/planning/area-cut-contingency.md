@@ -58,9 +58,11 @@ For NW-MRC, firmware needs per-branch noise estimates σ²_j. Without `energy_me
 
 | Option | Source | Per-branch? | Notes |
 |---|---|---|---|
-| Keep `energy_meas_coarse` | `noise_metric[j]` via reg_bank | ✓ Yes | Only correct option for true NW-MRC |
-| `training_acc` noise_en window | `E_ref/M` from reg_bank | ✗ Ref-ant only | Arms before packet; gives σ²_ref, not per-branch |
+| Keep `energy_meas_coarse` | `noise_metric[j]` via reg_bank | ✓ Yes | Hardware path — lowest firmware overhead |
+| PSRAM readback (firmware) | Σ(i²+q²)/M from buffered samples | ✓ Yes | See [psram-software-energy-meas.md](psram-software-energy-meas.md). Replaces both AGC and NW-MRC. 3.5–7% firmware budget. |
+| `training_acc` noise_en window | `E_ref/M` from reg_bank | ✗ Ref-ant only | Arms before packet; gives σ²_ref only, not per-branch |
 | Equal-noise assumption | — | N/A | Falls back to standard MRC: w_j ∝ conj(H_j) |
+| ~~SX1257 RSSI via SPI~~ | ~~SX1257 register~~ | — | **Not available** — SX1257 has no RSSI register (confirmed from datasheet v1.2) |
 
 **For co-located antennas** (both NR=2 antennas on the same PCB), LNA and ADC thermal noise is nearly identical across branches. Standard MRC is optimal when σ²_j are equal — the NW-MRC gain only materialises when one branch is significantly noisier than the other (e.g., near an interference source).
 
