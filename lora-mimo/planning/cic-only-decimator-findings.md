@@ -1,7 +1,10 @@
 # CIC-only Decimator: Findings
 
-> **Status (2026-05-31):** RTL simulation complete (SGE job 1102). CIC-only is NOT
-> viable as a drop-in replacement for the primary 125 kHz LoRa mode.
+> **Status (2026-06-03, updated):** CIC-only IS the deployed solution. The FIR is dropped.
+> See addendum below for the revised operating point and rationale.
+>
+> **Status (2026-05-31, original):** RTL simulation complete (SGE job 1102). CIC-only is NOT
+> viable as a drop-in replacement for the primary 125 kHz LoRa mode at R=256.
 > The FIR remains required. TDM sharing (`sd_fir_mac`) is still the correct area lever.
 
 ## Background
@@ -86,6 +89,40 @@ CIC-only saving would have been ~26 k µm² post-TDM (eliminating `sd_fir_mac` +
 FIR MAC for 4 channels is still required; it costs ~20 k µm² total (vs 380 k for 4×
 instances today). The RTL is already written (`sd_fir_mac.v`, `sd_cic_chan.v`,
 `sd_fir_state.v`); proceed to `sd_decimator_top.v` integration and verification.
+
+## Addendum — 2026-06-03: CIC-only deployed at R=128
+
+The original conclusion was based on a single-antenna digital-to-digital chain where the
+downstream demodulator was on-chip and expected a specific IQ sample rate. That assumption
+was wrong: **the LoRa demodulator is off-chip (SX1302)**. The ASIC output goes through
+`sd_remod` which always produces a 32 MHz ΣΔ bitstream regardless of internal IQ rate.
+
+This changes the operating point:
+
+| Mode | R | decim_ratio | cic_only SQNR | Verdict |
+|---|---|---|---|---|
+| 125 kHz BW | 128 | 1 | 30.6 dB | **PASS** — 2 samples/chip; SX1302 re-filters |
+| 250 kHz BW | 128 | 1 | 30.6 dB | **PASS** — 1 sample/chip; same hardware setting |
+| 500 kHz BW | 64 | 2 | 9.6 dB | **NOT SUPPORTED** |
+
+**Why R=128 works for 125 kHz BW:**
+1. Both BW modes use the same `decim_ratio=1` (R=128) setting in firmware.
+2. For 125 kHz BW, this gives 2 samples/chip at the CIC output — the sd_remod updates
+   at 250 kHz and the SX1302 sees a denser ΣΔ stream, which the SX1302 channel filter
+   integrates. The extra noise bandwidth (125–250 kHz) is rejected by the SX1302 filter.
+3. The SX1257 analog IF filter (`RegRxBw`, reg 0x0D) already bandlimits the signal to
+   the LoRa BW before the ΣΔ bitstream is generated — there is little out-of-band energy
+   to alias in the first place.
+4. The sd_remod→SX1302 path provides a third stage of filtering after the CIC.
+
+**500 kHz BW not supported:** R=64 gives 9.6 dB SQNR — unusable. Lower R (R=32) is
+worse (1.8 dB). This is a fundamental CIC alias rejection limit, not fixable by
+oversampling. 500 kHz BW requires the FIR and is outside the system specification.
+
+**FIR status:** Dropped from the design. `sd_decimator_cic_only.v` is now the production
+decimator module. Area saving vs combchain: ~75 k µm² per instance (4 instances = ~300 k µm²).
+
+**Firmware init:** Set reg 0x12 `decim_ratio = 2'b01` at startup for both 125 and 250 kHz BW.
 
 ## Files
 
