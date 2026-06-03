@@ -2,39 +2,81 @@
 
 **Status:** Design exploration (2026-06-03)
 
-## Area Target
+## Area Targets
 
-**2.0 mm² die — achievable target.**
+**Assumptions:** FD cells (`gf180mcu_fd_sc_mcu7t5v0`), CIC-only decimator (no FIR), PicoRV32, 70% effective density target (stdcell + macros / core area).
 
-| Parameter | Value |
-|-----------|-------|
-| CPU | PicoRV32 |
-| Decimator | CIC-only (no FIR compensation) |
-| NR per chip | 2 |
-| Stdcell | ~1.11 mm² |
-| SRAM macros | 0.41 mm² (2× OCD 1024×8 CPU + 1× OCD 512×8 frontend buf) |
-| Routable area | ~1.59 mm² (stdcell at 70% utilisation) |
-| **Die core** | **~2.0 mm²** |
+> **Timing caveat:** FD cells are characterised at 3 V but designed for 5 V. They close timing at TT 25°C at 32 MHz but fail the SS 125°C corner. AS cells (`gf180mcu_as_sc_mcu7t3v3`) close SS timing but add ~16% die area. This analysis uses FD cells as the baseline; switching to AS cells adds ~0.25 mm² (NR=2) or ~0.33 mm² (NR=4).
 
-Assumes 70% stdcell utilisation in the non-macro routable area, which requires careful macro placement and floorplan optimisation but is a realistic tapeout target. Effective density at 70% util is ~76% — above the current safe default of 55–60% but achievable with targeted congestion relief and layer adjustment.
+| Config | Stdcell | Macros | Die (70% eff. density) |
+|--------|---------|--------|------------------------|
+| NR=2 CIC-only PicoRV32 | 1.11 mm² | 0.41 mm² | **2.17 mm²** |
+| NR=4 CIC-only PicoRV32 | 1.43 mm² | 0.52 mm² | **2.78 mm²** |
 
-### NR=4 comparison at the same 70% assumption
+Macros: 2× OCD 1024×8 (CPU IMEM/DMEM) + 1× OCD 512×8 (frontend buf, NR=2) or 1× FD 512×8 (NR=4).
 
-| Config | Stdcell | Macros | Die (70% util) |
-|--------|---------|--------|----------------|
-| NR=2 CIC-only PicoRV32 | 1.11 mm² | 0.41 mm² | **2.00 mm²** |
-| NR=4 CIC-only PicoRV32 | 1.43 mm² | 0.52 mm² | **2.56 mm²** |
+### System-level silicon comparison
 
-NR=4 costs 0.56 mm² more per die (+28%) but is a single-chip solution. The system-level silicon is very different:
+NR=4 costs 0.61 mm² more per die (+28%) but is a single-chip solution:
 
 | System | Dies | Total silicon |
 |--------|------|--------------|
-| NR=4 single chip | 1 × 2.56 mm² | **2.56 mm²** |
-| NR=2 cascade (×3 identical) | 3 × 2.00 mm² | **5.99 mm²** |
+| NR=4 single chip | 1 × 2.78 mm² | **2.78 mm²** |
+| NR=2 cascade (×3 identical) | 3 × 2.17 mm² | **6.51 mm²** |
 
-NR=4 is 2.4× more silicon-efficient for the whole system, eliminates inter-chip lock synchronisation, removes re-modulator SQNR accumulation risk, and gives true 4-branch MRC instead of hierarchical combining. The cascade is only justified if the submission has a hard per-die area limit below 2.56 mm².
+NR=4 is 2.3× more silicon-efficient for the whole system, eliminates inter-chip lock synchronisation, removes re-modulator SQNR accumulation risk, and gives true 4-branch MRC instead of hierarchical combining. The cascade is only justified if the submission has a hard per-die area limit below 2.78 mm².
 
 ---
+
+---
+
+## 8-Stream TDM ΣΔ Decimator
+
+For NR=4 (4 antennas × I + Q = 8 independent 1-bit streams at 32 MHz), a single shared CIC can serve all 8 streams via pre-decimation + TDM.
+
+### Architecture
+
+**Stage 1 — boxcar-8 pre-decimator (per stream, trivial):**
+Accumulate 8 consecutive 1-bit samples into a 4-bit partial sum. This is a 3-bit counter with an output latch. 8 instances ≈ negligible area.
+
+Each stream drops from 32 MHz 1-bit → 4 MHz 4-bit.
+
+**Stage 2 — TDM CIC(R=32) (shared):**
+```
+8 streams × 4 MHz/stream = 32 MHz total throughput
+                         = 1 stream per 32 MHz clock cycle  ← perfect fill
+```
+One physical adder cycles through all 8 streams' state in rotation. One set of CIC comb logic at 1 MHz (8 × 125 kHz) handles all 8 outputs.
+
+Total OSR = 8 × 32 = 256 — identical to the standalone R=256 design. A boxcar-8 (1st-order CIC, R=8) cascaded with a 3rd-order CIC(R=32) gives a 4th-order CIC(R=256): one additional order of alias rejection vs the current 3rd-order design.
+
+### What is shared vs per-stream
+
+| Resource | Standalone (8 CICs) | TDM approach |
+|---|---|---|
+| Integrator adders | 8× | **1×** + 8-way state mux |
+| Comb subtractors | 8× | **1×** (1 MHz, trivial TDM) |
+| State registers | 8 × k × ~25 bit | 8 × k × ~25 bit **(unchanged)** |
+| Pre-stage | — | 8 × 3-bit counter (negligible) |
+
+State registers (each stream's running accumulator) cannot be eliminated — they are per-stream by necessity. The saving is 7 adders + 7 subtractors + their associated clock trees.
+
+### Synthesis results (FD cells, R=256, job 1241)
+
+| Variant | Area (µm²) | vs same-NR CIC+FIR |
+|---|---|---|
+| NR=4 — 4× CIC-only | 300,207 | −57.9% |
+| NR=4 — TDM CIC (boxcar-4 + R=64) | **256,779** | −64.0% |
+| NR=4 — 4× CIC+FIR shift-add | 713,080 | baseline |
+| NR=2 — 2× CIC-only | 150,103 | −57.9% |
+| NR=2 — TDM CIC (boxcar-2 + R=128) | **128,694** | −63.9% |
+| NR=2 — 2× CIC+FIR shift-add | 356,540 | baseline |
+
+Key findings:
+- TDM saves **~14.5% over plain CIC-only** in both NR=4 and NR=2 — consistent, as expected (shared adder; state registers unchanged)
+- NR=2 TDM (128k µm²) is exactly half NR=4 TDM (257k µm²)
+- FIR elimination remains the dominant lever (−57.9%); TDM adds a further −6% on top
+- RTL: `sd_decimator_cic_tdm8.v` (NR=4), `sd_decimator_cic_tdm2ch.v` (NR=2)
 
 ---
 
