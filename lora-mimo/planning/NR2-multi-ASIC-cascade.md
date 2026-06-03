@@ -4,21 +4,26 @@
 
 ## Area Targets
 
-**Based on AS cell synthesis (jobs 1241–1243). FD cells within ~1%.**
-70% effective density target (stdcell + macros / core area).
+**AS cell synthesis (gf180mcu_as_sc_mcu7t3v3). 65% effective density (DRT-safe limit from P&R history).**
 
-At 65% effective density (empirical DRT-safe limit from P&R history):
+#### Measured baseline (job 1249, AS cells)
+
+Full top-level `mimo_rx_top` with current RTL: NR=4, 4× CIC-only, ser-IQ mrc, HW weight_gen, energy_meas_coarse, no NFE:
+**1,598,073 µm² stdcell** (NR=4). NR=2 estimate: ~1,167k µm².
+
+#### Die area at 65% effective density
 
 | Config | Stdcell | Macros | Die (65%) |
 |--------|---------|--------|-----------|
-| NR=2 TDM CIC, baseline | ~1.19 mm² | 0.41 mm² | **~2.46 mm²** |
-| NR=2 TDM CIC + sw-wgt + ser-IQ + no-NFE | ~1.03 mm² | 0.41 mm² | **~2.22 mm²** |
-| NR=4 TDM CIC, baseline | ~1.50 mm² | 0.52 mm² | **~3.11 mm²** |
-| NR=4 TDM CIC + sw-wgt + ser-IQ + no-NFE | ~1.31 mm² | 0.52 mm² | **~2.82 mm²** |
+| NR=4 CIC-only, current RTL (measured) | **1,598k** | 0.52 mm² | **~3.26 mm²** |
+| NR=2 CIC-only, current RTL | ~1,167k | 0.41 mm² | **~2.43 mm²** |
+| NR=2 + sw weight_gen + no energy_meas | ~992k | 0.41 mm² | **~2.16 mm²** |
+| NR=2 + sw weight_gen + no energy_meas + 12-bit W | ~962k | 0.41 mm² | **~2.11 mm²** |
 
-Cut stack: sw weight_gen (−105k NR=2 / −138k NR=4), mrc ser-IQ (−23k / −24k), remove NFE (−34k each).
+Cut stack from NR=2 1,167k baseline: sw weight_gen −105k, energy_meas_coarse −70k, mrc 12-bit weights ~−30k.
+NFE already removed — not in current RTL baseline.
 
-> **Timing caveat:** FD cells close TT 25°C at 32 MHz but fail SS 125°C. AS cells close SS but add ~16% die area (~+0.37 mm² NR=2, ~+0.46 mm² NR=4).
+> **Timing caveat:** FD cells close TT 25°C at 32 MHz but fail SS 125°C. AS cells close SS but add ~16% die area.
 
 ### Per-block breakdown (AS cells, jobs 1241–1247)
 
