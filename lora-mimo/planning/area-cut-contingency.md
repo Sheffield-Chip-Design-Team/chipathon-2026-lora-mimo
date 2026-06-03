@@ -66,6 +66,37 @@ For NW-MRC, firmware needs per-branch noise estimates σ²_j. Without `energy_me
 
 **Recommendation:** If deployment is co-located antennas in a controlled environment, remove `energy_meas_coarse` and use standard MRC. If one antenna may be near interference (distributed deployment, external antenna), keep `energy_meas_coarse` for NW-MRC capability.
 
+### Software energy measurement via PSRAM — feasibility note
+
+PSRAM stores decimated 8-bit IQ samples continuously (8 bytes per iq_valid, all branches). PicoRV32 could compute per-branch energy Σ(i² + q²) by reading back a symbol window from PSRAM — **replacing energy_meas_coarse entirely while keeping NW-MRC capability**.
+
+**Timing budget (SF7, 125 kHz, 16 MHz PicoRV32):**
+
+| Step | Operations | Cycles |
+|---|---|---|
+| PSRAM read (128 samples × 8 bytes, QPI burst) | ~128 × 15 cycles | ~1,920 |
+| Software i² + q² per branch (128 × 4 multiplies) | ~512 × 5 cycles | ~2,560 |
+| **Total** | | **~4,480 cycles = ~280 µs** |
+
+Symbol budget at SF7 = 128,000 cycles (8 ms). Energy computation uses **3.5% of budget**. Scales linearly with SF — SF12 (4096 samples) uses 143,360 cycles = 9 ms, but the SF12 symbol period is 131 ms, so still <7% of budget.
+
+**RTL additions required (small):**
+
+1. **Expose full 23-bit write pointer to reg_bank:** `psram_buf_ctrl` outputs `wr_ptr` internally but only 7 bits reach reg_bank (reg 0x15). Need a 3-byte register (24 bits) for firmware to read the current write pointer and compute `energy_base = wr_ptr - M×8`.
+
+2. **Firmware-triggered read mode in `psram_buf_ctrl`:** Current read mode only replays from `buf_base` set at sc_lock. Need a second "diagnostic read" mode: firmware writes a start address + byte count to reg_bank, psram_buf_ctrl reads that window and exposes bytes via a data register (or byte-at-a-time AHB read).
+
+**Flow for NW-MRC with PSRAM energy:**
+1. Packet detected (`sc_lock`). PSRAM has been buffering pre-preamble noise samples.
+2. After `training_done`: firmware reads `wr_ptr` from reg_bank.
+3. Firmware triggers diagnostic read of `M×8` bytes at `(wr_ptr - preamble_offset - M×8)` — the pre-preamble noise window.
+4. Firmware computes σ²_j = Σ(i²+q²)/M per branch from noise samples.
+5. Firmware computes NW-MRC weights: `w_j = conj(Z_j) / σ²_j`, writes to W shadow, commits.
+
+**Net area impact:** Remove energy_meas_coarse (−70k µm²). Add ~5–10k µm² for the two reg_bank/psram_buf_ctrl additions. **Net: ~−60–65k µm².**
+
+**Status:** Feasible, requires moderate RTL addition. Not yet implemented. Blocks energy_meas removal without losing NW-MRC.
+
 ---
 
 ## Stack analysis — how far can we go?
