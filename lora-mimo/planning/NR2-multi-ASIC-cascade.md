@@ -4,9 +4,17 @@
 
 ## Area Targets
 
-**Assumptions:** FD cells (`gf180mcu_fd_sc_mcu7t5v0`), CIC-only decimator (no FIR), PicoRV32, 70% effective density target (stdcell + macros / core area).
+**Based on AS cell synthesis (jobs 1241–1243). FD cells within ~1%.**
+70% effective density target (stdcell + macros / core area).
 
-> **Timing caveat:** FD cells are characterised at 3 V but designed for 5 V. They close timing at TT 25°C at 32 MHz but fail the SS 125°C corner. AS cells (`gf180mcu_as_sc_mcu7t3v3`) close SS timing but add ~16% die area. This analysis uses FD cells as the baseline; switching to AS cells adds ~0.25 mm² (NR=2) or ~0.33 mm² (NR=4).
+| Config | Stdcell | Macros | Die (70% eff. density) |
+|--------|---------|--------|------------------------|
+| NR=2 CIC-only | ~1.21 mm² | 0.41 mm² | **~2.31 mm²** |
+| NR=2 TDM CIC  | ~1.19 mm² | 0.41 mm² | **~2.29 mm²** |
+| NR=4 CIC-only | ~1.55 mm² | 0.52 mm² | **~2.96 mm²** |
+| NR=4 TDM CIC  | ~1.50 mm² | 0.52 mm² | **~2.89 mm²** |
+
+> **Timing caveat:** FD cells close TT 25°C at 32 MHz but fail SS 125°C. AS cells close SS but add ~16% die area (~+0.37 mm² NR=2, ~+0.46 mm² NR=4).
 
 ### Per-block breakdown (AS cells, jobs 1241–1243)
 
@@ -15,7 +23,7 @@
 | PicoRV32 core + wrap | No | 307,618 | 307,618 |
 | sd_decimator CIC-only | Yes | 300,207 | 150,103 |
 | sd_decimator TDM CIC | Yes | 256,779 | 128,694 |
-| dc_removal | Yes | 200,036 | 100,018 |
+| dc_removal | Yes (1 module, all-NR) | 50,009 | ~25,000 |
 | training_acc | Yes | 155,762 | 111,358 |
 | weight_gen | Yes | 138,115 | 105,198 |
 | mrc_combiner | Yes | 121,366 | 107,394 |
@@ -29,19 +37,21 @@
 | frontend_buf_ctrl | No | 17,434 | 17,434 |
 | spi_slave + master | No | 27,713 | 27,713 |
 | irq_ctrl + ahb_bus | No | 5,036 | 5,036 |
-| **Stdcell total (CIC-only)** | | **~1,696k** | **~1,336k** |
-| **Stdcell total (TDM CIC)** | | **~1,652k** | **~1,315k** |
+| **Stdcell total (CIC-only)** | | **~1,546k** | **~1,211k** |
+| **Stdcell total (TDM CIC)** | | **~1,502k** | **~1,190k** |
 
-NR=2 training_acc/mrc_combiner/weight_gen are constant-propagation estimates (ant2/3 tied to 0); FSM overhead retained so actual NR=2 rewrite would be ~5% smaller.
+Notes:
+- dc_removal is a single module handling all NR antennas — not per-instance. NR=2 figure is a constant-propagation estimate.
+- NR=2 training_acc/mrc_combiner/weight_gen are constant-propagation estimates (ant2/3 tied to 0); FSM overhead retained so actual NR=2 rewrite would be ~5% smaller.
 
 ### Die area summary (70% effective density, OCD macros)
 
 | Config | Stdcell | Macros | Die |
 |--------|---------|--------|-----|
-| NR=2 CIC-only | ~1.34 mm² | 0.41 mm² | **~2.50 mm²** |
-| NR=2 TDM CIC | ~1.32 mm² | 0.41 mm² | **~2.47 mm²** |
-| NR=4 CIC-only | ~1.70 mm² | 0.52 mm² | **~3.17 mm²** |
-| NR=4 TDM CIC | ~1.65 mm² | 0.52 mm² | **~3.10 mm²** |
+| NR=2 CIC-only | ~1.21 mm² | 0.41 mm² | **~2.31 mm²** |
+| NR=2 TDM CIC | ~1.19 mm² | 0.41 mm² | **~2.29 mm²** |
+| NR=4 CIC-only | ~1.55 mm² | 0.52 mm² | **~2.96 mm²** |
+| NR=4 TDM CIC | ~1.50 mm² | 0.52 mm² | **~2.89 mm²** |
 
 Macros: 2× OCD 1024×8 (CPU IMEM/DMEM) + 1× OCD 512×8 (frontend buf, NR=2) or 1× FD 512×8 (NR=4).
 
