@@ -28,8 +28,8 @@ These are independent of the choices above and can be stacked.
 
 | # | Block | Cut | Stdcell saving | Measured? | Prerequisite | Risk |
 |---|---|---|---|---|---|---|
-| 5 | noise_floor_est | Remove entirely | −34k µm² | ✓ | Confirm sigma2 feedback path unused | Low if NFE unused |
-| 6 | energy_meas | Remove entirely | −70k µm² | ✓ (baseline) | See removal notes below | Low — energy gating off by default |
+| 5 | ~~noise_floor_est~~ | ~~Remove entirely~~ | ~~−34k µm²~~ | **Already done** | NFE (`noise_floor_est.v`) is not instantiated in `mimo_rx_top.v` — cut already taken. sigma2 path is energy_meas_coarse → noise_metric → reg_bank directly. | — |
+| 6 | energy_meas_coarse | Remove entirely | −70k µm² | ✓ (baseline) | See removal notes below. Removes both energy measurement (AGC) AND noise_metric (sigma2). They are the same block — cannot split. | Medium — AGC blind without it |
 | 7 | mrc_combiner | 16-bit → 12-bit weights (Option B) | ~−30k µm² | ~ | Narrow weight_gen output ports + reg_bank W shadow | Low — 12-bit gives 72 dB weight SNR |
 | 8 | ~~DMEM SRAM~~ | ~~OCD 1024×8 → OCD 512×8~~ | — | — | ~~−58k µm² macro~~ | **Deprioritised — do not resize** |
 | 9 | dc_removal | Remove entirely | ~−25k µm² | ~ | Confirm ADC DC offset acceptable | Low for AC-coupled RF path |
@@ -60,15 +60,17 @@ Starting from baseline ~2.43 mm² (ser-IQ already applied):
 
 | Cuts applied | Stdcell | Macros | Die (65%) |
 |---|---|---|---|
-| Baseline (NR=2 + TDM CIC + ser-IQ) | 1,167k | 0.41 mm² | **~2.43 mm²** |
-| + SW weight_gen (#2) | 1,062k | 0.41 mm² | **~2.27 mm²** |
-| + Remove NFE (#5) | 1,028k | 0.41 mm² | **~2.21 mm²** |
-| + Remove energy_meas (#6) | 958k | 0.41 mm² | **~2.11 mm²** |
-| + mrc 12-bit weights (#7) | 928k | 0.41 mm² | **~2.06 mm²** |
-| + SERV (#1) on top of all above | 678k | 0.41 mm² | **~1.68 mm²** |
+NFE (`noise_floor_est`) is already removed from the design — baseline already reflects this.
 
-Sub-2 mm² is achievable without SERV once energy_meas and NFE are removed.  
-Sub-1.7 mm² requires SERV.
+| Cuts applied | Stdcell | Macros | Die (65%) |
+|---|---|---|---|
+| Baseline (NR=2 + TDM CIC + ser-IQ, NFE already removed) | 1,167k | 0.41 mm² | **~2.43 mm²** |
+| + SW weight_gen (#2) | 1,062k | 0.41 mm² | **~2.27 mm²** |
+| + Remove energy_meas_coarse (#6) | 992k | 0.41 mm² | **~2.16 mm²** |
+| + mrc 12-bit weights (#7) | 962k | 0.41 mm² | **~2.11 mm²** |
+| + SERV (#1) on top of all above | 712k | 0.41 mm² | **~1.73 mm²** |
+
+Sub-2.2 mm² achievable without SERV. Sub-1.8 mm² requires SERV.
 
 ---
 
