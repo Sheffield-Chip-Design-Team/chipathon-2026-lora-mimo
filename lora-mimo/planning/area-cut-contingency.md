@@ -29,12 +29,28 @@ These are independent of the choices above and can be stacked.
 | # | Block | Cut | Stdcell saving | Measured? | Prerequisite | Risk |
 |---|---|---|---|---|---|---|
 | 5 | noise_floor_est | Remove entirely | −34k µm² | ✓ | Confirm sigma2 feedback path unused | Low if NFE unused |
-| 6 | energy_meas | Remove entirely | −70k µm² | ✓ (baseline) | Move energy threshold logic to firmware; AGC via reg_bank polling | Medium — AGC loop complexity increases |
-| 7 | mrc_combiner | 16-bit → 12-bit weights (Option B) | ~−30k µm² | ~ | Narrow weight_gen output ports + reg_bank W shadow | Low — 12-bit gives 72 dB weight SNR, far above needed |
-| 8 | DMEM SRAM | OCD 1024×8 → OCD 512×8 | — | — | **−58k µm² macro** | Firmware DMEM must fit in 512 bytes; tight with SW weight_gen | Medium |
-| 9 | dc_removal | Remove entirely | ~−25k µm² | ~ | Confirm ADC DC offset acceptable or handle in software | Low for AC-coupled RF path |
+| 6 | energy_meas | Remove entirely | −70k µm² | ✓ (baseline) | See removal notes below | Low — energy gating off by default |
+| 7 | mrc_combiner | 16-bit → 12-bit weights (Option B) | ~−30k µm² | ~ | Narrow weight_gen output ports + reg_bank W shadow | Low — 12-bit gives 72 dB weight SNR |
+| 8 | ~~DMEM SRAM~~ | ~~OCD 1024×8 → OCD 512×8~~ | — | — | ~~−58k µm² macro~~ | **Deprioritised — do not resize** |
+| 9 | dc_removal | Remove entirely | ~−25k µm² | ~ | Confirm ADC DC offset acceptable | Low for AC-coupled RF path |
 | 10 | spi_slave | Remove | −17k µm² | ✓ (baseline) | Host must always be SPI master | Low |
-| 11 | psram_buf_ctrl | Remove | −46k µm² | ✓ (baseline) | Requires different lock-detect architecture (no PSRAM replay) | High — architectural change |
+| 11 | psram_buf_ctrl | Remove | −46k µm² | ✓ (baseline) | Requires different lock-detect architecture | High — architectural change |
+
+### energy_meas removal — implementation notes (#6)
+
+`energy_meas_coarse` has three downstream consumers in `mimo_rx_top.v`:
+
+| Consumer | Signal | Removal action |
+|---|---|---|
+| `packet_ctrl_fsm` | `energy_snap[0..3]` | Tie to `16'h0000`. Energy gating (`energy_gate_en`) is off by default (reg default = 0) so packet detection is unaffected. |
+| `reg_bank` | `energy_snap[0..3]` | Tie to `16'h0000`. Firmware readback (0x40–0x47) returns 0 — acceptable if firmware doesn't use energy for decisions. |
+| `noise_floor_est` / sigma2 | `noise_metric[0..3]` | Tie to `10'h000`. NFE should also be removed (#5); if kept it just outputs zero estimates. |
+
+**RTL change:** ~5 lines in `mimo_rx_top.v` — delete `u_em` instantiation, add four `assign energy_snap[k] = 16'h0;` and `assign noise_metric[k] = 10'h0;` lines.
+
+`energy_valid`, `energy_snapshot_valid`, `noise_metric_valid` → tie to `1'b0`.
+
+No changes needed to `packet_ctrl_fsm`, `reg_bank`, or `noise_floor_est` RTL — all handle zero inputs correctly.
 
 ---
 
@@ -49,11 +65,10 @@ Starting from baseline ~2.43 mm² (ser-IQ already applied):
 | + Remove NFE (#5) | 1,028k | 0.41 mm² | **~2.21 mm²** |
 | + Remove energy_meas (#6) | 958k | 0.41 mm² | **~2.11 mm²** |
 | + mrc 12-bit weights (#7) | 928k | 0.41 mm² | **~2.06 mm²** |
-| + DMEM 512B (#8) | 928k | 0.35 mm² | **~1.97 mm²** |
-| + SERV (#1) on top of all above | 678k | 0.35 mm² | **~1.58 mm²** |
+| + SERV (#1) on top of all above | 678k | 0.41 mm² | **~1.68 mm²** |
 
-Sub-2 mm² is achievable without SERV if energy_meas is removed.  
-Sub-1.6 mm² requires SERV.
+Sub-2 mm² is achievable without SERV once energy_meas and NFE are removed.  
+Sub-1.7 mm² requires SERV.
 
 ---
 
