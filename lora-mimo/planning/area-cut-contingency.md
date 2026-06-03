@@ -44,13 +44,27 @@ These are independent of the choices above and can be stacked.
 |---|---|---|
 | `packet_ctrl_fsm` | `energy_snap[0..3]` | Tie to `16'h0000`. Energy gating (`energy_gate_en`) is off by default (reg default = 0) so packet detection is unaffected. |
 | `reg_bank` | `energy_snap[0..3]` | Tie to `16'h0000`. Firmware readback (0x40–0x47) returns 0 — acceptable if firmware doesn't use energy for decisions. |
-| `noise_floor_est` / sigma2 | `noise_metric[0..3]` | Tie to `10'h000`. NFE should also be removed (#5); if kept it just outputs zero estimates. |
+| sigma2 path | `noise_metric[0..3]` | Tie to `10'h000`. sigma2_hw in reg_bank returns 0. |
 
-**RTL change:** ~5 lines in `mimo_rx_top.v` — delete `u_em` instantiation, add four `assign energy_snap[k] = 16'h0;` and `assign noise_metric[k] = 10'h0;` lines.
+**RTL change:** ~5 lines in `mimo_rx_top.v` — delete `u_em` instantiation, add four `assign energy_snap[k] = 16'h0;` and `assign noise_metric[k] = 10'h0;` lines. Tie `energy_valid`, `energy_snapshot_valid`, `noise_metric_valid` to `1'b0`.
 
-`energy_valid`, `energy_snapshot_valid`, `noise_metric_valid` → tie to `1'b0`.
+No changes needed to `packet_ctrl_fsm`, `reg_bank` RTL — all handle zero inputs correctly.
 
-No changes needed to `packet_ctrl_fsm`, `reg_bank`, or `noise_floor_est` RTL — all handle zero inputs correctly.
+### NW-MRC dependency on energy_meas_coarse
+
+**Current hardware does standard MRC, not NW-MRC.** `sigma2_hw` (from `noise_metric`) is firmware-readback only — `weight_gen.v` does not consume σ² at all. NW-MRC is a firmware-only feature planned for the software weight computation path.
+
+For NW-MRC, firmware needs per-branch noise estimates σ²_j. Without `energy_meas_coarse`:
+
+| Option | Source | Per-branch? | Notes |
+|---|---|---|---|
+| Keep `energy_meas_coarse` | `noise_metric[j]` via reg_bank | ✓ Yes | Only correct option for true NW-MRC |
+| `training_acc` noise_en window | `E_ref/M` from reg_bank | ✗ Ref-ant only | Arms before packet; gives σ²_ref, not per-branch |
+| Equal-noise assumption | — | N/A | Falls back to standard MRC: w_j ∝ conj(H_j) |
+
+**For co-located antennas** (both NR=2 antennas on the same PCB), LNA and ADC thermal noise is nearly identical across branches. Standard MRC is optimal when σ²_j are equal — the NW-MRC gain only materialises when one branch is significantly noisier than the other (e.g., near an interference source).
+
+**Recommendation:** If deployment is co-located antennas in a controlled environment, remove `energy_meas_coarse` and use standard MRC. If one antenna may be near interference (distributed deployment, external antenna), keep `energy_meas_coarse` for NW-MRC capability.
 
 ---
 
