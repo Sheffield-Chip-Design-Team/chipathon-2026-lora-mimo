@@ -327,7 +327,6 @@ module mimo_rx_top (
         .sc_lock    (sc_lock),
         .timing_ref (timing_ref),
         .sf         (rb_sf_cfg),
-        .ref_sel    (rb_ref_sel),
         .Z_i0 (Z_i[0]), .Z_q0 (Z_q[0]),
         .Z_i1 (Z_i[1]), .Z_q1 (Z_q[1]),
         .Z_i2 (Z_i[2]), .Z_q2 (Z_q[2]),

@@ -1,25 +1,31 @@
 // training_acc.v
-// Training accumulator: cross-correlates each branch against a reference branch
-// over 8 LoRa symbols after preamble detection.
-// Single shared 8×8 pipelined multiplier. TDM: ant[1:0] × sub[1:0] = 16 active
-// steps. No E_ref (unused in datapath). Total latency: 17 cycles.
-// Budget: iq_valid every ≥128 cycles at CIC R=128 — 111 cycles idle.
+// All-pairs cross-correlator: computes all C(4,2)=6 branch-pair cross-correlations
+// and accumulates them into per-branch sums W_k = Σ_{l≠k} Z_kl.
+//
+// MRC weight:  w_k = conj(W_k) / noise_est[k]²
+//   No fixed reference branch — robust to individual branch fading.
+//   Inactive branches (raw=0) contribute zero automatically.
+//
+// TDM: 6 pairs × 4 sub-steps = 24 active steps, 25 cycles total.
+// Budget: iq_valid every ≥128 cycles (CIC R=128) — 103 cycles idle.
+//
+// Pair table (a < b):
+//   0=(0,1)  1=(0,2)  2=(0,3)  3=(1,2)  4=(1,3)  5=(2,3)
+//
+// Sub-steps per pair (a,b):
+//   sub=0: I_a×I_b → p_latch
+//   sub=1: Q_a×Q_b → W_i[a] += p_latch+mul,  W_i[b] += p_latch+mul
+//   sub=2: Q_a×I_b → p_latch
+//   sub=3: I_a×Q_b → W_q[a] += p_latch−mul,  W_q[b] −= p_latch−mul  (conj)
+//          at pair=5, last_samp: commit all outputs, assert training_done
+//
+// Operand encoding (same as single-ref design, op_b now uses pair_b branch):
+//   op_a = (sub[0]^sub[1]) ? raw_qr[pair_a] : raw_ir[pair_a]
+//   op_b =  sub[0]         ? raw_qr[pair_b] : raw_ir[pair_b]
+//
+// Accumulators: 32-bit signed. Max |W_k| = 3×1.06G ≈ 3.2G — fits with AGC.
+// Output ports: 32-bit (direct, no sign extension).
 // GF180MCU, 3.3V, 16 MHz clock domain.
-//
-// Sub-steps per antenna (sub=0..3):
-//   sub=0: I×ref_i  → p_latch
-//   sub=1: Q×ref_q  → Z_i_a[ant] += p_latch + mul_out
-//   sub=2: Q×ref_i  → p_latch
-//   sub=3: I×ref_q  → Z_q_a[ant] += p_latch - mul_out
-//          (at ant=3: if last_samp, commit all outputs + assert training_done)
-//
-// Operand encoding:
-//   op_a = (sub[0]^sub[1]) ? raw_qr[ant] : raw_ir[ant]
-//   op_b = sub[0]          ? ref_qr      : ref_ir
-//
-// Accumulator widths:
-//   Z_i/Z_q: 31-bit signed. Max |Z| at SF12 = 8×4096×2×127² ≈ 1.06G < 2^30.
-//   Output ports 32-bit (sign-extended at commit).
 
 module training_acc (
     input  wire        clk,
@@ -30,7 +36,6 @@ module training_acc (
     input  wire        sc_lock,
     input  wire [31:0] timing_ref,
     input  wire [3:0]  sf,
-    input  wire [1:0]  ref_sel,
     output reg  signed [31:0] Z_i0, Z_q0, Z_i1, Z_q1, Z_i2, Z_q2, Z_i3, Z_q3,
     output reg         training_done,
     output reg  [9:0]  n_acc
@@ -40,52 +45,70 @@ module training_acc (
     reg [31:0] acc_start, acc_end;
     reg        armed;
 
-    // Reference branch mux
-    reg signed [7:0] ref_i, ref_q;
-    always @(*) begin
-        case (ref_sel)
-            2'd0: begin ref_i = raw_i0; ref_q = raw_q0; end
-            2'd1: begin ref_i = raw_i1; ref_q = raw_q1; end
-            2'd2: begin ref_i = raw_i2; ref_q = raw_q2; end
-            default: begin ref_i = raw_i3; ref_q = raw_q3; end
-        endcase
-    end
-
-    // TDM counters (drive operand mux combinatorially, registered into op_a/op_b)
-    reg [1:0] tdm_ant;
+    // TDM counters: pair (0-5) and sub-step (0-3)
+    reg [2:0] tdm_pair;
     reg [1:0] tdm_sub;
     reg       tdm_active;
 
     // 1-cycle delayed tags (synchronised with mul_out)
-    reg [1:0] acc_ant;
+    reg [2:0] acc_pair;
     reg [1:0] acc_sub;
     reg       acc_active;
 
-    // Latched branch samples and reference (captured at iq_valid trigger)
+    // Pair lookup: pair index → (branch_a, branch_b), always a < b
+    reg [1:0] tdm_pa, tdm_pb;
+    always @(*) begin
+        case (tdm_pair)
+            3'd0: begin tdm_pa = 2'd0; tdm_pb = 2'd1; end
+            3'd1: begin tdm_pa = 2'd0; tdm_pb = 2'd2; end
+            3'd2: begin tdm_pa = 2'd0; tdm_pb = 2'd3; end
+            3'd3: begin tdm_pa = 2'd1; tdm_pb = 2'd2; end
+            3'd4: begin tdm_pa = 2'd1; tdm_pb = 2'd3; end
+            default: begin tdm_pa = 2'd2; tdm_pb = 2'd3; end  // pair 5
+        endcase
+    end
+
+    reg [1:0] acc_pa, acc_pb;
+    always @(*) begin
+        case (acc_pair)
+            3'd0: begin acc_pa = 2'd0; acc_pb = 2'd1; end
+            3'd1: begin acc_pa = 2'd0; acc_pb = 2'd2; end
+            3'd2: begin acc_pa = 2'd0; acc_pb = 2'd3; end
+            3'd3: begin acc_pa = 2'd1; acc_pb = 2'd2; end
+            3'd4: begin acc_pa = 2'd1; acc_pb = 2'd3; end
+            default: begin acc_pa = 2'd2; acc_pb = 2'd3; end  // pair 5
+        endcase
+    end
+
+    // Latched branch samples (captured at iq_valid trigger)
     reg signed [7:0] raw_ir [0:3];
     reg signed [7:0] raw_qr [0:3];
-    reg signed [7:0] ref_ir, ref_qr;
     reg              last_samp;
 
-    // Registered operand inputs → pipelined multiplier
+    // Registered operands → pipelined 8×8 multiplier
     reg signed [7:0]  op_a, op_b;
     reg signed [15:0] mul_out;
     always @(posedge clk) begin
-        op_a   <= (tdm_sub[0] ^ tdm_sub[1]) ? raw_qr[tdm_ant] : raw_ir[tdm_ant];
-        op_b   <= tdm_sub[0] ? ref_qr : ref_ir;
+        op_a    <= (tdm_sub[0]^tdm_sub[1]) ? raw_qr[tdm_pa] : raw_ir[tdm_pa];
+        op_b    <=  tdm_sub[0]              ? raw_qr[tdm_pb] : raw_ir[tdm_pb];
         mul_out <= op_a * op_b;
     end
 
-    // Intermediate product latch (holds even-sub product for odd-sub combine)
+    // Intermediate product latch (holds even-sub result for odd-sub combine)
     reg signed [15:0] p_latch;
 
-    // Internal 31-bit accumulator arrays
-    reg signed [30:0] Z_i_a [0:3];
-    reg signed [30:0] Z_q_a [0:3];
+    // Per-branch 32-bit accumulators: W_k = Σ_{l≠k} Z_kl
+    reg signed [31:0] W_i_a [0:3];
+    reg signed [31:0] W_q_a [0:3];
 
-    // Current-cycle Z_q3 value — used to read the fresh value at the commit step
-    wire signed [30:0] z_q_last =
-        Z_q_a[3] + {{15{p_latch[15]}}, p_latch} - {{15{mul_out[15]}}, mul_out};
+    // Sign-extended addends (32-bit) for the current product
+    wire signed [31:0] pl_ext  = {{16{p_latch[15]}},  p_latch};
+    wire signed [31:0] mul_ext = {{16{mul_out[15]}},  mul_out};
+    wire signed [31:0] zq_cur  = pl_ext - mul_ext;
+
+    // Fresh W_q values for the last pair (2,3) — needed at commit same cycle
+    wire signed [31:0] wq2_final = W_q_a[2] + zq_cur;
+    wire signed [31:0] wq3_final = W_q_a[3] - zq_cur;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -95,10 +118,10 @@ module training_acc (
             n_acc         <= 10'd0;
             acc_start     <= 32'd0;
             acc_end       <= 32'd0;
-            tdm_ant       <= 2'd0;
+            tdm_pair      <= 3'd0;
             tdm_sub       <= 2'd0;
             tdm_active    <= 1'b0;
-            acc_ant       <= 2'd0;
+            acc_pair      <= 3'd0;
             acc_sub       <= 2'd0;
             acc_active    <= 1'b0;
             last_samp     <= 1'b0;
@@ -106,12 +129,11 @@ module training_acc (
             raw_ir[2] <= 8'sd0; raw_ir[3] <= 8'sd0;
             raw_qr[0] <= 8'sd0; raw_qr[1] <= 8'sd0;
             raw_qr[2] <= 8'sd0; raw_qr[3] <= 8'sd0;
-            ref_ir <= 8'sd0; ref_qr <= 8'sd0;
             p_latch <= 16'sd0;
-            Z_i_a[0] <= 31'sd0; Z_q_a[0] <= 31'sd0;
-            Z_i_a[1] <= 31'sd0; Z_q_a[1] <= 31'sd0;
-            Z_i_a[2] <= 31'sd0; Z_q_a[2] <= 31'sd0;
-            Z_i_a[3] <= 31'sd0; Z_q_a[3] <= 31'sd0;
+            W_i_a[0] <= 32'sd0; W_q_a[0] <= 32'sd0;
+            W_i_a[1] <= 32'sd0; W_q_a[1] <= 32'sd0;
+            W_i_a[2] <= 32'sd0; W_q_a[2] <= 32'sd0;
+            W_i_a[3] <= 32'sd0; W_q_a[3] <= 32'sd0;
             Z_i0 <= 32'sd0; Z_q0 <= 32'sd0;
             Z_i1 <= 32'sd0; Z_q1 <= 32'sd0;
             Z_i2 <= 32'sd0; Z_q2 <= 32'sd0;
@@ -124,20 +146,20 @@ module training_acc (
             if (!sc_lock) begin
                 armed      <= 1'b0;
                 tdm_active <= 1'b0;
-                tdm_ant    <= 2'd0;
+                tdm_pair   <= 3'd0;
                 tdm_sub    <= 2'd0;
             end
 
-            // Arm on sc_lock rising edge
+            // Arm on sc_lock rising edge — reset per-branch accumulators
             if (sc_lock && !armed) begin
                 armed         <= 1'b1;
                 training_done <= 1'b0;
                 acc_start     <= timing_ref;
                 acc_end       <= timing_ref + (32'd1 << (sf[3:0] + 4'd3)) - 32'd1;
-                Z_i_a[0] <= 31'sd0; Z_q_a[0] <= 31'sd0;
-                Z_i_a[1] <= 31'sd0; Z_q_a[1] <= 31'sd0;
-                Z_i_a[2] <= 31'sd0; Z_q_a[2] <= 31'sd0;
-                Z_i_a[3] <= 31'sd0; Z_q_a[3] <= 31'sd0;
+                W_i_a[0] <= 32'sd0; W_q_a[0] <= 32'sd0;
+                W_i_a[1] <= 32'sd0; W_q_a[1] <= 32'sd0;
+                W_i_a[2] <= 32'sd0; W_q_a[2] <= 32'sd0;
+                W_i_a[3] <= 32'sd0; W_q_a[3] <= 32'sd0;
                 n_acc <= 10'd0;
             end
 
@@ -149,28 +171,25 @@ module training_acc (
                 raw_ir[1] <= raw_i1; raw_qr[1] <= raw_q1;
                 raw_ir[2] <= raw_i2; raw_qr[2] <= raw_q2;
                 raw_ir[3] <= raw_i3; raw_qr[3] <= raw_q3;
-                ref_ir    <= ref_i;
-                ref_qr    <= ref_q;
-                last_samp <= (sample_count == acc_end);
+                last_samp  <= (sample_count == acc_end);
                 if (n_acc < 10'd1023)
                     n_acc <= n_acc + 10'd1;
-                tdm_ant    <= 2'd0;
+                tdm_pair   <= 3'd0;
                 tdm_sub    <= 2'd0;
                 tdm_active <= 1'b1;
             end else if (tdm_active) begin
-                // Advance ant/sub counters
                 if (tdm_sub == 2'd3) begin
                     tdm_sub <= 2'd0;
-                    if (tdm_ant == 2'd3)
+                    if (tdm_pair == 3'd5)
                         tdm_active <= 1'b0;
                     else
-                        tdm_ant <= tdm_ant + 2'd1;
+                        tdm_pair <= tdm_pair + 3'd1;
                 end else
                     tdm_sub <= tdm_sub + 2'd1;
             end
 
-            // Delayed tags track the step whose product is in mul_out
-            acc_ant    <= tdm_ant;
+            // Delayed tags — synchronised with mul_out
+            acc_pair   <= tdm_pair;
             acc_sub    <= tdm_sub;
             acc_active <= tdm_active;
 
@@ -179,28 +198,32 @@ module training_acc (
                 if (acc_sub[0] == 1'b0) begin
                     // Even sub (0 or 2): latch product
                     p_latch <= mul_out;
+
                 end else if (acc_sub[1] == 1'b0) begin
-                    // sub=1: accumulate Z_i
-                    Z_i_a[acc_ant] <= Z_i_a[acc_ant]
-                        + {{15{p_latch[15]}}, p_latch}
-                        + {{15{mul_out[15]}}, mul_out};
+                    // sub=1: Z_i = I_a×I_b + Q_a×Q_b
+                    // Both pair_a and pair_b branches accumulate the same value
+                    W_i_a[acc_pa] <= W_i_a[acc_pa] + pl_ext + mul_ext;
+                    W_i_a[acc_pb] <= W_i_a[acc_pb] + pl_ext + mul_ext;
+
                 end else begin
-                    // sub=3: accumulate Z_q; commit on last sample at ant=3
-                    if (acc_ant == 2'd3 && last_samp) begin
-                        Z_q_a[3]      <= z_q_last;
-                        Z_i0          <= {Z_i_a[0][30], Z_i_a[0]};
-                        Z_q0          <= {Z_q_a[0][30], Z_q_a[0]};
-                        Z_i1          <= {Z_i_a[1][30], Z_i_a[1]};
-                        Z_q1          <= {Z_q_a[1][30], Z_q_a[1]};
-                        Z_i2          <= {Z_i_a[2][30], Z_i_a[2]};
-                        Z_q2          <= {Z_q_a[2][30], Z_q_a[2]};
-                        Z_i3          <= {Z_i_a[3][30], Z_i_a[3]};
-                        Z_q3          <= {z_q_last[30], z_q_last};
+                    // sub=3: Z_q = Q_a×I_b − I_a×Q_b
+                    // pair_a adds +zq_cur, pair_b adds −zq_cur (conjugate symmetry)
+                    if (acc_pair == 3'd5 && last_samp) begin
+                        // Last pair (2,3): commit using combinatorial fresh values
+                        W_q_a[2]      <= wq2_final;
+                        W_q_a[3]      <= wq3_final;
+                        Z_i0          <= W_i_a[0];
+                        Z_q0          <= W_q_a[0];
+                        Z_i1          <= W_i_a[1];
+                        Z_q1          <= W_q_a[1];
+                        Z_i2          <= W_i_a[2];
+                        Z_q2          <= wq2_final;
+                        Z_i3          <= W_i_a[3];
+                        Z_q3          <= wq3_final;
                         training_done <= 1'b1;
                     end else begin
-                        Z_q_a[acc_ant] <= Z_q_a[acc_ant]
-                            + {{15{p_latch[15]}}, p_latch}
-                            - {{15{mul_out[15]}}, mul_out};
+                        W_q_a[acc_pa] <= W_q_a[acc_pa] + zq_cur;
+                        W_q_a[acc_pb] <= W_q_a[acc_pb] - zq_cur;
                     end
                 end
             end

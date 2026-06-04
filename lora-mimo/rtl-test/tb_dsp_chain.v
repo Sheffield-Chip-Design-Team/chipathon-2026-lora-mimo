@@ -239,7 +239,6 @@ module tb_dsp_chain;
         .sc_lock        (sc_lock),
         .timing_ref     (timing_ref),
         .sf             (4'd7),
-        .ref_sel        (2'd0),
         .Z_i0           (Z_i0),  .Z_q0  (Z_q0),
         .Z_i1           (Z_i1),  .Z_q1  (Z_q1),
         .Z_i2           (Z_i2),  .Z_q2  (Z_q2),
