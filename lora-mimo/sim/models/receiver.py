@@ -120,6 +120,47 @@ def nonfft_combine_rtl_int8(
     return _sat_int8(shifted_i).astype(float) + 1j * _sat_int8(shifted_q).astype(float)
 
 
+def nonfft_combine_rtl_int8w(
+    rx_payload: np.ndarray,
+    w: np.ndarray,
+    post_gain_shift: int = 0,
+) -> np.ndarray:
+    """
+    RTL-style int8 combiner with 8-bit weights (matches mrc_combiner.v, commit b8c8f0d).
+
+    Weights are 8-bit signed [-128, 127]; multipliers are 8×8→16-bit;
+    accumulator is 18-bit. Firmware writes the normalised weight (peak→±120)
+    into the HIGH BYTE of the 16-bit shadow register; mimo_rx_top slices [15:8].
+
+    Parameters
+    ----------
+    rx_payload : (NR, n_samples) complex, interpreted as int8 I/Q samples
+    w          : (NR,) complex weights (any scale; normalised internally to int8)
+    post_gain_shift : 0..7
+
+    Returns
+    -------
+    y : (n_samples,) complex with int8-valued I/Q components
+    """
+    peak = np.max(np.abs(np.concatenate([w.real, w.imag])))
+    if peak == 0:
+        return np.zeros(rx_payload.shape[1], dtype=complex)
+    # Scale so peak maps to ±120 (leave headroom for coherent sum of 4)
+    scale = 120.0 / peak
+    w_re = np.clip(np.round(w.real * scale), -128, 127).astype(np.int64)
+    w_im = np.clip(np.round(w.imag * scale), -128, 127).astype(np.int64)
+
+    x_i, x_q = _as_int8_pair(rx_payload)
+
+    acc_i = np.sum(w_re[:, None] * x_i - w_im[:, None] * x_q, axis=0)
+    acc_q = np.sum(w_re[:, None] * x_q + w_im[:, None] * x_i, axis=0)
+
+    # Guard divide-by-2 then post_gain_shift (matches RTL)
+    shifted_i = (acc_i >> 1) << int(post_gain_shift)
+    shifted_q = (acc_q >> 1) << int(post_gain_shift)
+    return _sat_int8(shifted_i).astype(float) + 1j * _sat_int8(shifted_q).astype(float)
+
+
 def choose_comb_post_gain(
     y: np.ndarray,
     target_peak: int = 90,

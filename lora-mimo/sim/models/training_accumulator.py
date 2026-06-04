@@ -181,6 +181,87 @@ def compute_weights(
     return w
 
 
+def training_accumulate_allpairs(
+    raw_j: np.ndarray,
+    sc_lock_sample: int,
+    timing_ref: int,
+    M: int,
+    preamble_len: int = 8,
+) -> tuple[np.ndarray, int]:
+    """
+    All-pairs cross-correlator matching training_acc.v (commit 2202607).
+
+    Computes all C(4,2)=6 branch-pair cross-correlations and returns the
+    per-branch sum W_k = Σ_{l≠k} Z_kl used as MRC weights.
+
+    Z_kl = Σ_n raw_k[n] · conj(raw_l[n])
+
+    W_k = Σ_{l≠k} Z_kl  (sum of all cross-correlations involving branch k)
+
+    MRC weight: w_k = conj(W_k) / noise_est[k]²
+
+    Benefits vs single-ref: if branch 0 is in deep fade, Z_01, Z_02, Z_03 → 0
+    but Z_12, Z_13, Z_23 are still valid. Branch 0 gets weight → 0 automatically.
+
+    Returns
+    -------
+    W_k : (NR,) complex — per-branch accumulated sum (direct, not sign-extended)
+    n_acc : int — number of samples accumulated
+    """
+    NR, N_samples = raw_j.shape
+    acc_start = sc_lock_sample
+    acc_end   = min(timing_ref + preamble_len * M - 1, N_samples - 1)
+    if acc_start > acc_end:
+        return np.zeros(NR, dtype=complex), 0
+
+    win = raw_j[:, acc_start:acc_end + 1]   # (NR, n_acc)
+    n_acc = acc_end - acc_start + 1
+
+    # Compute all pairwise correlations in one shot: Z = win @ win.conj().T
+    Z = win @ np.conj(win.T)  # (NR, NR); diagonal = autocorrelation
+
+    # W_k = sum of row k, excluding the diagonal
+    W_k = np.sum(Z, axis=1) - np.diag(Z)
+    return W_k, n_acc
+
+
+def noise_est_rtl(
+    raw_j: np.ndarray,
+    sc_lock_sample: int,
+    sample_rate: float = 125e3,
+) -> np.ndarray:
+    """
+    Bit-accurate model of noise_est.v (commit b8c8f0d).
+
+    Accumulates Manhattan norm Σ(|I_k|+|Q_k|) per branch for all samples
+    before sc_lock, using a 24-bit unsigned accumulator. Returns the 8-bit
+    snapshot (acc[23:16]) taken at sc_lock.
+
+    Parameters
+    ----------
+    raw_j         : (NR, N) complex int8 samples from DC removal output
+    sc_lock_sample: index at which sc_lock fires (accumulation stops here)
+    sample_rate   : unused, kept for API clarity
+
+    Returns
+    -------
+    noise_snap : (NR,) uint8 array — acc[23:16] per branch
+    """
+    NR = raw_j.shape[0]
+    acc = np.zeros(NR, dtype=np.uint32)
+
+    for n in range(sc_lock_sample):
+        raw_i = np.clip(np.round(raw_j[:, n].real), -128, 127).astype(np.int32)
+        raw_q = np.clip(np.round(raw_j[:, n].imag), -128, 127).astype(np.int32)
+        # |x| ≈ bitwise flip for negative (off by 1 LSB — irrelevant for ratios)
+        abs_i = np.where(raw_i < 0, ~raw_i & 0xFF, raw_i).astype(np.uint32)
+        abs_q = np.where(raw_q < 0, ~raw_q & 0xFF, raw_q).astype(np.uint32)
+        man = abs_i + abs_q  # Manhattan norm, max 254, 9-bit
+        acc = (acc + man) & 0xFFFFFF  # 24-bit unsigned wrap
+
+    return ((acc >> 16) & 0xFF).astype(np.uint8)
+
+
 def cfo_diagnostic(Z_j: np.ndarray) -> float:
     """
     Pooled CFO diagnostic from training accumulator output.
