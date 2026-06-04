@@ -2,12 +2,19 @@
 // First-order IIR DC blocker. 4 branches × I+Q in parallel.
 //
 // Algorithm: leaky integrator with α = 2^−4
-//   dc_est[n] = dc_est[n−1] + (x[n] − dc_est[n−1]) >> 4
-//   y[n]      = x[n] − dc_est[n−1]
+//   acc[n]    = acc[n−1] + (x[n] − acc[n−1]>>4)
+//   dc_est[n] = acc[n] >> 4
+//   y[n]      = x[n] − dc_est[n−1]           (pre-update estimate, 1-cycle lag)
 //
 // Accumulator: 12-bit Q8.4 per channel (acc[11:4] = integer DC estimate).
-// Fixed α=4: the >> 4 is zero-cost (wires). No barrel shifter needed.
-// Time constant at 125 kHz (CIC R=128): τ ≈ 2^4 / 125 kHz ≈ 128 µs.
+// Time constant: τ ≈ 16 samples = 128 µs at 125 kHz (CIC R=128).
+//
+// The update adds the full diff (not diff>>4) to the accumulator.
+// This eliminates the ±15 LSB positive-DC deadband that floor(diff/16) caused:
+//   Old: err = diff>>4 → 0 for 0 < diff < 16 → stalls on small +ve DC
+//   New: err = diff    → always non-zero for diff ≠ 0 → symmetric convergence
+// Time constant is unchanged; only the transient response improves.
+// Max steady-state acc = 127 × 16 = 2032, fits in 12-bit signed (±2047).
 //
 // Removed from current design: dc_alpha_shift port (always was 8, broken for
 // 8-bit inputs), dc_bypass port (always 1'b0), dc_est output ports (floating).
@@ -41,17 +48,17 @@ module dc_removal (
     assign diff_q[2] = {raw_q2[7], raw_q2} - {acc_q[2][11], acc_q[2][11:4]};
     assign diff_q[3] = {raw_q3[7], raw_q3} - {acc_q[3][11], acc_q[3][11:4]};
 
-    // err = diff >> 4 (sign-extended to 12-bit): just wire the upper bits
+    // err = diff sign-extended to 12-bit (full diff, no /16 wiring)
     wire signed [11:0] err_i [0:3];
     wire signed [11:0] err_q [0:3];
-    assign err_i[0] = {{7{diff_i[0][8]}}, diff_i[0][8:4]};
-    assign err_i[1] = {{7{diff_i[1][8]}}, diff_i[1][8:4]};
-    assign err_i[2] = {{7{diff_i[2][8]}}, diff_i[2][8:4]};
-    assign err_i[3] = {{7{diff_i[3][8]}}, diff_i[3][8:4]};
-    assign err_q[0] = {{7{diff_q[0][8]}}, diff_q[0][8:4]};
-    assign err_q[1] = {{7{diff_q[1][8]}}, diff_q[1][8:4]};
-    assign err_q[2] = {{7{diff_q[2][8]}}, diff_q[2][8:4]};
-    assign err_q[3] = {{7{diff_q[3][8]}}, diff_q[3][8:4]};
+    assign err_i[0] = {{3{diff_i[0][8]}}, diff_i[0]};
+    assign err_i[1] = {{3{diff_i[1][8]}}, diff_i[1]};
+    assign err_i[2] = {{3{diff_i[2][8]}}, diff_i[2]};
+    assign err_i[3] = {{3{diff_i[3][8]}}, diff_i[3]};
+    assign err_q[0] = {{3{diff_q[0][8]}}, diff_q[0]};
+    assign err_q[1] = {{3{diff_q[1][8]}}, diff_q[1]};
+    assign err_q[2] = {{3{diff_q[2][8]}}, diff_q[2]};
+    assign err_q[3] = {{3{diff_q[3][8]}}, diff_q[3]};
 
     always @(posedge clk_32m or negedge rst_n) begin
         if (!rst_n) begin
