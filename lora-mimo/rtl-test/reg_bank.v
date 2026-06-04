@@ -117,6 +117,7 @@ module reg_bank (
     output reg [1:0]   wgt_mode,
     output reg         w_commit_pulse,  // W1P: one-cycle pulse when bit [4] written 1
     output reg [2:0]   comb_post_gain_shift,
+    output reg [1:0]   remod_backoff_shift,
     // W shadow bank: 16 bytes 0x90–0x9F packed big-endian (byte[0] at [127:120])
     output wire [127:0] w_shadow,
     // Calibration coefficients: 16 bytes 0xA0–0xAF packed big-endian
@@ -141,7 +142,8 @@ module reg_bank (
     // sigma2 SW overrides: 8 bytes 0xF1–0xF8 packed big-endian (byte[0] at [63:56])
     output wire [63:0]  sigma2_sw,
     // Null steering
-    output reg         noise_en        // 0x6A[0]: enable noise-window accumulation mode
+    output reg         noise_en,       // 0x6A[0]: enable noise-window accumulation mode
+    output reg [1:0]   ref_sel         // 0x6B[1:0]: training reference branch (0-3)
 );
 
     reg read_valid;
@@ -239,6 +241,7 @@ module reg_bank (
             wgt_mode         <= 2'b11;
             w_commit_pulse   <= 1'b0;
             comb_post_gain_shift <= 3'd0;
+            remod_backoff_shift <= 2'd1;
             psram_ctrl       <= 3'h0;
             sx_target        <= 2'h0;
             sx_addr          <= 7'h0;
@@ -255,6 +258,7 @@ module reg_bank (
             snr_0_reg        <= 16'h0;
             null_quality_reg <= 16'h0;
             noise_en         <= 1'b0;
+            ref_sel          <= 2'd0;
             for (i = 0; i < 16; i = i + 1) w_shadow_r[i] <= 8'h00;
             // CAL default: I=0x7FFF (unity), Q=0x0000 per branch (4 bytes each)
             cal_coeff_r[0]  <= 8'h7F; cal_coeff_r[1]  <= 8'hFF; // CAL_0_I
@@ -312,6 +316,7 @@ module reg_bank (
                                w_commit_pulse <= wdata[4];
                            end
                     8'h36: comb_post_gain_shift <= wdata[2:0];
+                    8'h37: remod_backoff_shift <= wdata[1:0];
                     // W shadow bank 0x90–0x9F
                     8'h90: w_shadow_r[0]  <= wdata;
                     8'h91: w_shadow_r[1]  <= wdata;
@@ -378,6 +383,7 @@ module reg_bank (
                     8'h56: null_quality_reg[15:8] <= wdata;
                     8'h57: null_quality_reg[7:0]  <= wdata;
                     8'h6A: noise_en               <= wdata[0];
+                    8'h6B: ref_sel                <= wdata[1:0];
                     default: ;
                 endcase
             end
@@ -454,6 +460,7 @@ module reg_bank (
             8'h35: rdata_next = {w_missed_rb, w_pending_rb, w_valid_rb,
                             1'b0, wgt_mode, wgt_auto_commit, wgt_src};
             8'h36: rdata_next = {5'h0, comb_post_gain_shift};
+            8'h37: rdata_next = {6'h0, remod_backoff_shift};
             // --- Energy / SC live telemetry ---
             8'h40: rdata_next = energy_0[15:8];
             8'h41: rdata_next = energy_0[7:0];
@@ -480,6 +487,7 @@ module reg_bank (
             8'h56: rdata_next = null_quality_reg[15:8];
             8'h57: rdata_next = null_quality_reg[7:0];
             8'h6A: rdata_next = {7'h0, noise_en};
+            8'h6B: rdata_next = {6'h0, ref_sel};
             // --- Training / estimation ---
             8'h60: rdata_next = {6'h0, training_armed, training_done_rb};
             8'h61: rdata_next = {6'h0, n_acc[9:8]};

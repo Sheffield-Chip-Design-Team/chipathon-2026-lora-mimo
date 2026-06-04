@@ -152,15 +152,11 @@ module tb_dsp_chain_real;
         .raw_q0        (raw_q0),    .raw_q1        (raw_q1),
         .raw_q2        (raw_q2),    .raw_q3        (raw_q3),
         .raw_valid     (iq_valid),
-        .dc_alpha_shift(4'd8),
-        .dc_bypass     (1'b0),      // active DC removal on real capture
         .out_i0        (dcr_i0),    .out_i1        (dcr_i1),
         .out_i2        (dcr_i2),    .out_i3        (dcr_i3),
         .out_q0        (dcr_q0),    .out_q1        (dcr_q1),
         .out_q2        (dcr_q2),    .out_q3        (dcr_q3),
-        .out_valid     (dcr_valid),
-        .dc_est_i0 (), .dc_est_i1 (), .dc_est_i2 (), .dc_est_i3 (),
-        .dc_est_q0 (), .dc_est_q1 (), .dc_est_q2 (), .dc_est_q3 ()
+        .out_valid     (dcr_valid)
     );
 
     // -----------------------------------------------------------------------
@@ -277,7 +273,6 @@ module tb_dsp_chain_real;
     // Stage 6: Training accumulator
     // -----------------------------------------------------------------------
     wire signed [31:0] Z_i0, Z_q0, Z_i1, Z_q1, Z_i2, Z_q2, Z_i3, Z_q3;
-    wire signed [63:0] E_ref;
     wire        training_done;
     wire [9:0]  n_acc;
 
@@ -288,10 +283,9 @@ module tb_dsp_chain_real;
         .raw_q0(dcr_q0), .raw_q1(dcr_q1), .raw_q2(dcr_q2), .raw_q3(dcr_q3),
         .sc_lock(sc_lock),   .timing_ref(timing_ref),
         .sf(4'd7),           .ref_sel(2'd0),
-        .noise_en(1'b0),
         .Z_i0(Z_i0), .Z_q0(Z_q0), .Z_i1(Z_i1), .Z_q1(Z_q1),
         .Z_i2(Z_i2), .Z_q2(Z_q2), .Z_i3(Z_i3), .Z_q3(Z_q3),
-        .E_ref(E_ref),       .training_done(training_done), .noise_ready(), .n_acc(n_acc)
+        .training_done(training_done), .n_acc(n_acc)
     );
 
     // -----------------------------------------------------------------------
@@ -345,10 +339,10 @@ module tb_dsp_chain_real;
         .x_i2(dcr_i2), .x_q2(dcr_q2),
         .x_i3(dcr_i3), .x_q3(dcr_q3),
         .x_valid(dcr_valid),
-        .W_re0(W_hw_re0), .W_im0(W_hw_im0),
-        .W_re1(W_hw_re1), .W_im1(W_hw_im1),
-        .W_re2(W_hw_re2), .W_im2(W_hw_im2),
-        .W_re3(W_hw_re3), .W_im3(W_hw_im3),
+        .W_re0      (W_hw_re0[15:8]), .W_im0      (W_hw_im0[15:8]),
+        .W_re1      (W_hw_re1[15:8]), .W_im1      (W_hw_im1[15:8]),
+        .W_re2      (W_hw_re2[15:8]), .W_im2      (W_hw_im2[15:8]),
+        .W_re3      (W_hw_re3[15:8]), .W_im3      (W_hw_im3[15:8]),
         .W_valid(W_valid),
         .mode(1'b0),        .bypass_ant(2'd0),
         .post_gain_shift(3'd0),

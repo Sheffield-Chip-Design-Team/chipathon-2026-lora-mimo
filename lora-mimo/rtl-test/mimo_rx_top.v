@@ -93,13 +93,10 @@ module mimo_rx_top (
                 rb_rx_gain_shadow_2, rb_rx_gain_shadow_3;
     wire [7:0]  rb_tx_gain_0, rb_tx_gain_1;
     wire        rb_rx_gain_commit;
-    wire        rb_wgt_src, rb_wgt_auto_commit;
-    wire [1:0]  rb_wgt_mode;
     wire        rb_w_commit_pulse;
     wire [2:0]  rb_comb_post_gain_shift;
     wire [1:0]  rb_remod_backoff_shift;
     wire [127:0] rb_w_shadow;
-    wire [127:0] rb_cal_coeff;
     wire [2:0]  rb_psram_ctrl;
     wire [1:0]  rb_sx_target;
     wire [6:0]  rb_sx_addr;
@@ -112,6 +109,7 @@ module mimo_rx_top (
     wire [15:0] rb_noise_thresh;
     wire        rb_sigma2_commit;
     wire [63:0] rb_sigma2_sw;
+    wire [1:0]  rb_ref_sel;
 
     // =========================================================================
     // Stage 1: ΣΔ Decimators — CIC N=3 only, no FIR (×4 sd_decimator_cic_only)
@@ -152,32 +150,30 @@ module mimo_rx_top (
         .iq_out_i(dec_i[3]), .iq_out_q(dec_q[3]), .iq_valid(dec_valid_all[3]));
 
     // =========================================================================
-    // Stage 2: DC Removal ×4 (single module, all 4 branches)
+    // Stage 2: DC Removal removed — AFE PCB characterisation confirmed AC-coupled.
+    // dcr_* wires feed directly from CIC decimator outputs.
+    // =========================================================================
+    // Stage 2: DC Removal ×4 — simplified IIR, α=2^{-4}, 12-bit Q8.4 accumulator.
+    // SX1257 is zero-IF with no on-chip receiver DC cancellation; this block
+    // removes LO self-mixing offset before the correlator chain.
     // =========================================================================
     wire signed [7:0] dcr_i [0:3];
     wire signed [7:0] dcr_q [0:3];
     wire              dcr_valid;
 
-    // DC_ALPHA_SHIFT hardwired to 8 per spec (can be made reg_bank config)
-    localparam DC_ALPHA_SHIFT = 4'd8;
-
     dc_removal u_dcr (
-        .clk_32m       (clk),
-        .rst_n         (rst_n),
+        .clk_32m  (clk),
+        .rst_n    (rst_n),
         .raw_i0 (dec_i[0]), .raw_i1 (dec_i[1]),
         .raw_i2 (dec_i[2]), .raw_i3 (dec_i[3]),
         .raw_q0 (dec_q[0]), .raw_q1 (dec_q[1]),
         .raw_q2 (dec_q[2]), .raw_q3 (dec_q[3]),
-        .raw_valid     (iq_valid),
-        .dc_alpha_shift(DC_ALPHA_SHIFT),
-        .dc_bypass     (1'b0),
+        .raw_valid  (iq_valid),
         .out_i0 (dcr_i[0]), .out_i1 (dcr_i[1]),
         .out_i2 (dcr_i[2]), .out_i3 (dcr_i[3]),
         .out_q0 (dcr_q[0]), .out_q1 (dcr_q[1]),
         .out_q2 (dcr_q[2]), .out_q3 (dcr_q[3]),
-        .out_valid     (dcr_valid),
-        .dc_est_i0 (), .dc_est_i1 (), .dc_est_i2 (), .dc_est_i3 (),
-        .dc_est_q0 (), .dc_est_q1 (), .dc_est_q2 (), .dc_est_q3 ()
+        .out_valid  (dcr_valid)
     );
 
     // =========================================================================
@@ -278,29 +274,38 @@ module mimo_rx_top (
     );
 
     // =========================================================================
-    // Stage 3c: Energy Measurement (feeds AGC snapshot + coarse FW noise metric)
+    // Stage 3c: Energy Measurement removed — firmware uses PSRAM IQ readback.
+    // Replaced by lightweight noise_est block (Manhattan norm, no multipliers).
+    // noise_snap[k] readable at reg_bank 0x40–0x47 (same slot as old energy_snap).
     // =========================================================================
+    wire [7:0]  noise_snap  [0:3];
+    // energy_snap zero-padded to 16-bit for downstream consumers (packet_ctrl_fsm, reg_bank)
     wire [15:0] energy_snap [0:3];
+    assign energy_snap[0] = {noise_snap[0], 8'h0};
+    assign energy_snap[1] = {noise_snap[1], 8'h0};
+    assign energy_snap[2] = {noise_snap[2], 8'h0};
+    assign energy_snap[3] = {noise_snap[3], 8'h0};
+    wire        energy_valid;
+    wire        energy_snapshot_valid;
     wire [9:0]  noise_metric [0:3];
-    wire        energy_valid, energy_snapshot_valid, noise_metric_valid;
+    wire        noise_metric_valid;
+    assign energy_snapshot_valid = 1'b0;
+    assign noise_metric[0] = 10'h0; assign noise_metric[1] = 10'h0;
+    assign noise_metric[2] = 10'h0; assign noise_metric[3] = 10'h0;
+    assign noise_metric_valid = 1'b0;
 
-    energy_meas_coarse u_em (
-        .clk_32m     (clk),
-        .rst_n       (rst_n),
-        .iq_i_0 (dcr_i[0]), .iq_i_1 (dcr_i[1]),
-        .iq_i_2 (dcr_i[2]), .iq_i_3 (dcr_i[3]),
-        .iq_q_0 (dcr_q[0]), .iq_q_1 (dcr_q[1]),
-        .iq_q_2 (dcr_q[2]), .iq_q_3 (dcr_q[3]),
-        .iq_valid    (dcr_valid),
-        .sf          (rb_sf_cfg),
-        .sc_lock     (sc_lock),
-        .energy_0 (energy_snap[0]), .energy_1 (energy_snap[1]),
-        .energy_2 (energy_snap[2]), .energy_3 (energy_snap[3]),
-        .noise_metric_0 (noise_metric[0]), .noise_metric_1 (noise_metric[1]),
-        .noise_metric_2 (noise_metric[2]), .noise_metric_3 (noise_metric[3]),
-        .energy_valid           (energy_valid),
-        .energy_snapshot_valid  (energy_snapshot_valid),
-        .noise_metric_valid     (noise_metric_valid)
+    noise_est u_nest (
+        .clk        (clk),
+        .rst_n      (rst_n),
+        .iq_valid   (dcr_valid),
+        .sc_lock    (sc_lock),
+        .dcr_i0 (dcr_i[0]), .dcr_i1 (dcr_i[1]),
+        .dcr_i2 (dcr_i[2]), .dcr_i3 (dcr_i[3]),
+        .dcr_q0 (dcr_q[0]), .dcr_q1 (dcr_q[1]),
+        .dcr_q2 (dcr_q[2]), .dcr_q3 (dcr_q[3]),
+        .noise_snap_0 (noise_snap[0]),  .noise_snap_1 (noise_snap[1]),
+        .noise_snap_2 (noise_snap[2]),  .noise_snap_3 (noise_snap[3]),
+        .noise_valid  (energy_valid)
     );
 
     // =========================================================================
@@ -308,11 +313,8 @@ module mimo_rx_top (
     // =========================================================================
     wire signed [31:0] Z_i [0:3];
     wire signed [31:0] Z_q [0:3];
-    wire signed [63:0] E_ref;
     wire               training_done;
-    wire               noise_ready;
     wire [9:0]         n_acc;
-    wire               rb_noise_en;
 
     training_acc u_tacc (
         .clk        (clk),
@@ -325,15 +327,12 @@ module mimo_rx_top (
         .sc_lock    (sc_lock),
         .timing_ref (timing_ref),
         .sf         (rb_sf_cfg),
-        .ref_sel    (2'b00),       // branch 0 is reference
-        .noise_en   (rb_noise_en),
+        .ref_sel    (rb_ref_sel),
         .Z_i0 (Z_i[0]), .Z_q0 (Z_q[0]),
         .Z_i1 (Z_i[1]), .Z_q1 (Z_q[1]),
         .Z_i2 (Z_i[2]), .Z_q2 (Z_q[2]),
         .Z_i3 (Z_i[3]), .Z_q3 (Z_q[3]),
-        .E_ref       (E_ref),
         .training_done (training_done),
-        .noise_ready (noise_ready),
         .n_acc       (n_acc)
     );
 
@@ -359,59 +358,11 @@ module mimo_rx_top (
     assign sigma2_valid = sigma2_valid_r;
 
     // =========================================================================
-    // Stage 6: Weight Generation FSM
+    // Stage 6: HW weight_gen removed — SW weight gen via firmware + reg_bank.
+    // Firmware writes 8-bit weights to the HIGH byte of each W shadow register,
+    // then strobes W_commit (reg_bank → rb_w_commit_pulse) to arm the combiner.
     // =========================================================================
-    wire signed [15:0] W_hw_re [0:3];
-    wire signed [15:0] W_hw_im [0:3];
-    wire               W_commit_hw;
-    wire               wgen_hw_done;
-
-    weight_gen u_wgen (
-        .clk           (clk),
-        .rst_n         (rst_n),
-        .training_done (training_done),
-        .Z_i0 (Z_i[0]), .Z_q0 (Z_q[0]),
-        .Z_i1 (Z_i[1]), .Z_q1 (Z_q[1]),
-        .Z_i2 (Z_i[2]), .Z_q2 (Z_q[2]),
-        .Z_i3 (Z_i[3]), .Z_q3 (Z_q[3]),
-        .n_acc         (n_acc),
-        .sf            (rb_sf_cfg),
-        .wgt_src       (rb_wgt_src),
-        .wgt_auto_commit (rb_wgt_auto_commit),
-        .wgt_mode      (rb_wgt_mode),
-        .antenna_en    (rb_antenna_en),
-        // Calibration coefficients from reg_bank (4 branches × 2 bytes I + 2 bytes Q)
-        .cal_re0 (rb_cal_coeff[127:112]),
-        .cal_im0 (rb_cal_coeff[111:96]),
-        .cal_re1 (rb_cal_coeff[95:80]),
-        .cal_im1 (rb_cal_coeff[79:64]),
-        .cal_re2 (rb_cal_coeff[63:48]),
-        .cal_im2 (rb_cal_coeff[47:32]),
-        .cal_re3 (rb_cal_coeff[31:16]),
-        .cal_im3 (rb_cal_coeff[15:0]),
-        // FW weight shadow from reg_bank (4 branches × re_hi/re_lo/im_hi/im_lo)
-        .fw_W_re0 (rb_w_shadow[127:112]),
-        .fw_W_im0 (rb_w_shadow[111:96]),
-        .fw_W_re1 (rb_w_shadow[95:80]),
-        .fw_W_im1 (rb_w_shadow[79:64]),
-        .fw_W_re2 (rb_w_shadow[63:48]),
-        .fw_W_im2 (rb_w_shadow[47:32]),
-        .fw_W_re3 (rb_w_shadow[31:16]),
-        .fw_W_im3 (rb_w_shadow[15:0]),
-        .fw_W_commit   (rb_w_commit_pulse),
-        .W_hw_re0 (W_hw_re[0]), .W_hw_im0 (W_hw_im[0]),
-        .W_hw_re1 (W_hw_re[1]), .W_hw_im1 (W_hw_im[1]),
-        .W_hw_re2 (W_hw_re[2]), .W_hw_im2 (W_hw_im[2]),
-        .W_hw_re3 (W_hw_re[3]), .W_hw_im3 (W_hw_im[3]),
-        .W_shadow_re0 (), .W_shadow_im0 (),
-        .W_shadow_re1 (), .W_shadow_im1 (),
-        .W_shadow_re2 (), .W_shadow_im2 (),
-        .W_shadow_re3 (), .W_shadow_im3 (),
-        .W_commit      (W_commit_hw),
-        .wgen_hw_done  (wgen_hw_done),
-        .wgen_active   (),
-        .wgen_mode_dbg ()
-    );
+    wire W_commit_hw = rb_w_commit_pulse;
 
     // =========================================================================
     // Stage 7: Packet Control FSM
@@ -538,10 +489,10 @@ module mimo_rx_top (
         .x_i2 (comb_xi[2]), .x_q2 (comb_xq[2]),
         .x_i3 (comb_xi[3]), .x_q3 (comb_xq[3]),
         .x_valid  (comb_xvalid),
-        .W_re0 (W_hw_re[0]), .W_im0 (W_hw_im[0]),
-        .W_re1 (W_hw_re[1]), .W_im1 (W_hw_im[1]),
-        .W_re2 (W_hw_re[2]), .W_im2 (W_hw_im[2]),
-        .W_re3 (W_hw_re[3]), .W_im3 (W_hw_im[3]),
+        .W_re0 (rb_w_shadow[127:120]), .W_im0 (rb_w_shadow[111:104]),
+        .W_re1 (rb_w_shadow[95:88]),  .W_im1 (rb_w_shadow[79:72]),
+        .W_re2 (rb_w_shadow[63:56]),  .W_im2 (rb_w_shadow[47:40]),
+        .W_re3 (rb_w_shadow[31:24]),  .W_im3 (rb_w_shadow[15:8]),
         .W_valid   (W_valid),
         .mode      (active_mode[0]),    // 0=MRC, 1=bypass
         .bypass_ant(bypass_ant),
@@ -705,14 +656,14 @@ module mimo_rx_top (
         .tx_gain_0       (rb_tx_gain_0),
         .tx_gain_1       (rb_tx_gain_1),
         .rx_gain_commit  (rb_rx_gain_commit),
-        .wgt_src         (rb_wgt_src),
-        .wgt_auto_commit (rb_wgt_auto_commit),
-        .wgt_mode        (rb_wgt_mode),
+        .wgt_src         (),
+        .wgt_auto_commit (),
+        .wgt_mode        (),
         .w_commit_pulse  (rb_w_commit_pulse),
         .comb_post_gain_shift(rb_comb_post_gain_shift),
         .remod_backoff_shift(rb_remod_backoff_shift),
         .w_shadow        (rb_w_shadow),
-        .cal_coeff       (rb_cal_coeff),
+        .cal_coeff       (),
         .psram_ctrl      (rb_psram_ctrl),
         .sx_target       (rb_sx_target),
         .sx_addr         (rb_sx_addr),
@@ -726,7 +677,8 @@ module mimo_rx_top (
         .noise_thresh    (rb_noise_thresh),
         .sigma2_commit   (rb_sigma2_commit),
         .sigma2_sw       (rb_sigma2_sw),
-        .noise_en        (rb_noise_en)
+        .noise_en        (),
+        .ref_sel         (rb_ref_sel)
     );
 
     // ---- SPI Master (→ SX1257) ----
@@ -766,7 +718,7 @@ module mimo_rx_top (
         .training_done  (training_done),
         .W_missed_packet(W_missed_packet),
         .packet_done    (packet_done_pulse),
-        .noise_ready    (noise_ready),
+        .noise_ready    (1'b0),
         .tx_prep        (rb_tx_ctrl[0]),
         .tx_done        (rb_tx_ctrl[1]),
         .irq_out        (irq_out),
