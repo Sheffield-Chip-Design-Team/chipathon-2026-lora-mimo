@@ -72,7 +72,44 @@ The synthesis area is not the die area.
 
 ## Action items
 
+- [x] Rerun mimo_rx_top P&R with FP_CORE_UTIL=40 once jobs 1118/1119 complete → superseded by absolute die sizing below
 - [ ] Confirm chipathon die area limit (determines whether SERV is mandatory)
-- [ ] Rerun mimo_rx_top P&R with FP_CORE_UTIL=40 once jobs 1118/1119 complete
-- [ ] If limit is ≤ 3 mm²: implement SERV swap (see `planning/blocks/PicoRV32 Integration.md`)
-- [ ] If limit is ≤ 2.7 mm²: also need TDM+FIR decimator extension
+- [ ] If limit is ≤ 2 mm²: implement SERV swap (see `planning/blocks/PicoRV32 Integration.md`)
+
+---
+
+## Actual P&R result (2026-06-05): 2.5 mm² achieved
+
+> **Status:** Closed cleanly. 2000×1250 µm flat `mimo_rx_top` run (job 130, RUN_2026-06-05_16-03-48).
+
+The May 31 prediction of ~4 mm² minimum was overly pessimistic. Switching from `FP_CORE_UTIL`-relative sizing to **absolute die sizing** with per-macro `FP_OBSTRUCTIONS` and a single bottom-row SRAM layout achieves far better packing efficiency than the util-based model.
+
+### Achieved result
+
+| Metric | Value |
+|---|---|
+| Die area | **2.5 mm² (2000×1250 µm)** |
+| Area reduction vs prior best (3.2 mm²) | **−22%** |
+| Area reduction vs predicted minimum (4.0 mm²) | **−37%** |
+| Std cells | 31,153 |
+| Placement utilisation | 46.3% |
+| Setup TT WNS | 0 ns ✓ |
+| Hold TT WNS | −0.120 ns (1 path, suppressed) |
+| DRC errors | 0 ✓ |
+
+### Why the prediction was wrong
+
+The May 31 model assumed:
+
+1. `FP_CORE_UTIL` mode where macros are placed *inside* the stdcell core area, doubling the effective density penalty.
+2. A stdcell budget of ~1.62 mm² — larger than the synth result after the May cuts were fully applied.
+3. A conservative effective density ceiling of 55%.
+
+The flat PnR run used:
+
+1. Absolute die sizing: macros and stdcells are placed independently; the 242 µm gap between CPU SRAM cluster and DSP SRAM is usable logic area, not wasted overlap.
+2. Per-macro obstructions rather than a blanket obstruction: GPL places stdcells in the inter-SRAM corridor.
+3. `GPL_CELL_PADDING: 0` to avoid DPL-0011 boundary failures at obstruction edges.
+4. All 5 SRAMs in a single bottom row (y=25) so the entire upper ~700 µm of the die is stdcell-only routing area.
+
+The effective stdcell area above the SRAM row is roughly 2000×700 = 1.4 mm², fully available to the router with Metal4/Metal5 passing freely over the SRAMs below.
