@@ -93,9 +93,13 @@ if { $::env(PDN_CORE_RING) == 1 } {
 }
 
 define_pdn_grid -macro -name macro_ocd -grid_over_pg_pins -cells "gf180mcu_ocd_ip_sram__sram1024x8m8wm1" -starts_with POWER -halo "$::env(PDN_HORIZONTAL_HALO) $::env(PDN_VERTICAL_HALO)"
+add_pdn_stripe -grid macro_ocd -layer $::env(PDN_VERTICAL_LAYER)   -width 2.0 -pitch 50 -offset 10 -starts_with POWER
+add_pdn_stripe -grid macro_ocd -layer $::env(PDN_HORIZONTAL_LAYER) -width 2.0 -pitch 50 -offset 10 -starts_with POWER
 add_pdn_connect -grid macro_ocd -layers "Metal3 $::env(PDN_VERTICAL_LAYER)"
 add_pdn_connect -grid macro_ocd -layers "$::env(PDN_VERTICAL_LAYER) $::env(PDN_HORIZONTAL_LAYER)"
 
 define_pdn_grid -macro -name macro_fd -grid_over_pg_pins -cells "gf180mcu_fd_ip_sram__sram512x8m8wm1" -starts_with POWER -halo "$::env(PDN_HORIZONTAL_HALO) $::env(PDN_VERTICAL_HALO)"
+add_pdn_stripe -grid macro_fd -layer $::env(PDN_VERTICAL_LAYER)   -width 2.0 -pitch 50 -offset 10 -starts_with POWER
+add_pdn_stripe -grid macro_fd -layer $::env(PDN_HORIZONTAL_LAYER) -width 2.0 -pitch 50 -offset 10 -starts_with POWER
 add_pdn_connect -grid macro_fd -layers "Metal3 $::env(PDN_VERTICAL_LAYER)"
 add_pdn_connect -grid macro_fd -layers "$::env(PDN_VERTICAL_LAYER) $::env(PDN_HORIZONTAL_LAYER)"
