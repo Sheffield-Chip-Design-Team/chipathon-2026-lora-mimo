@@ -106,6 +106,26 @@ module training_acc (
     wire signed [31:0] mul_ext = {{16{mul_out[15]}},  mul_out};
     wire signed [31:0] zq_cur  = pl_ext - mul_ext;
 
+    // Explicit read muxes for variable-index accumulator reads.
+    // Direct variable-index array reads (W_x_a[acc_p*]) cause Yosys $mem2reg to
+    // produce fully-undriven read data (all 32 bits → 0 after setundef), silently
+    // breaking accumulation.  Case-mux forces purely combinational MUX inference.
+    reg signed [31:0] wia_pa_r, wia_pb_r, wqa_pa_r, wqa_pb_r;
+    always @(*) begin
+        case (acc_pa)
+            2'd0: begin wia_pa_r = W_i_a[0]; wqa_pa_r = W_q_a[0]; end
+            2'd1: begin wia_pa_r = W_i_a[1]; wqa_pa_r = W_q_a[1]; end
+            2'd2: begin wia_pa_r = W_i_a[2]; wqa_pa_r = W_q_a[2]; end
+            default: begin wia_pa_r = W_i_a[3]; wqa_pa_r = W_q_a[3]; end
+        endcase
+        case (acc_pb)
+            2'd0: begin wia_pb_r = W_i_a[0]; wqa_pb_r = W_q_a[0]; end
+            2'd1: begin wia_pb_r = W_i_a[1]; wqa_pb_r = W_q_a[1]; end
+            2'd2: begin wia_pb_r = W_i_a[2]; wqa_pb_r = W_q_a[2]; end
+            default: begin wia_pb_r = W_i_a[3]; wqa_pb_r = W_q_a[3]; end
+        endcase
+    end
+
     // Fresh W_q values for the last pair (2,3) — needed at commit same cycle
     wire signed [31:0] wq2_final = W_q_a[2] + zq_cur;
     wire signed [31:0] wq3_final = W_q_a[3] - zq_cur;
@@ -202,8 +222,8 @@ module training_acc (
                 end else if (acc_sub[1] == 1'b0) begin
                     // sub=1: Z_i = I_a×I_b + Q_a×Q_b
                     // Both pair_a and pair_b branches accumulate the same value
-                    W_i_a[acc_pa] <= W_i_a[acc_pa] + pl_ext + mul_ext;
-                    W_i_a[acc_pb] <= W_i_a[acc_pb] + pl_ext + mul_ext;
+                    W_i_a[acc_pa] <= wia_pa_r + pl_ext + mul_ext;
+                    W_i_a[acc_pb] <= wia_pb_r + pl_ext + mul_ext;
 
                 end else begin
                     // sub=3: Z_q = Q_a×I_b − I_a×Q_b
@@ -222,8 +242,8 @@ module training_acc (
                         Z_q3          <= wq3_final;
                         training_done <= 1'b1;
                     end else begin
-                        W_q_a[acc_pa] <= W_q_a[acc_pa] + zq_cur;
-                        W_q_a[acc_pb] <= W_q_a[acc_pb] - zq_cur;
+                        W_q_a[acc_pa] <= wqa_pa_r + zq_cur;
+                        W_q_a[acc_pb] <= wqa_pb_r - zq_cur;
                     end
                 end
             end
