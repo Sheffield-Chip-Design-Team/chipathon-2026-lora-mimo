@@ -4,7 +4,7 @@ set_input_delay -max 2.0 -clock IQ_CLK [get_ports {IQ_DATA_I IQ_DATA_Q SPI_MOSI 
 set_input_delay -min 1.0 -clock IQ_CLK [get_ports {IQ_DATA_I IQ_DATA_Q SPI_MOSI TMS_GPIO0 TDI_GPIO1}]
 set_output_delay -max 2.0 -clock IQ_CLK [all_outputs]
 set_output_delay -min 0.0 -clock IQ_CLK [all_outputs]
-set_clock_uncertainty 0.25 [get_clocks IQ_CLK]
+set_clock_uncertainty 2.0 [get_clocks IQ_CLK]
 set_false_path -from [get_ports RESETB]
 set_false_path -from [get_ports HOST_CS]
 set_clock_groups -asynchronous -group [get_clocks IQ_CLK] -group [get_clocks SPI_SCK]
