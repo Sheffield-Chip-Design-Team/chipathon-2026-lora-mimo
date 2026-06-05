@@ -41,7 +41,7 @@ module psram_buf_ctrl (
     input  wire        packet_end,
 
     // QPI pad interface (shared with JTAG at padframe level)
-    output reg         sck_en,        // gates 32 MHz TCXO clock to PSRAM
+    output wire        sck,           // PSRAM clock (32 MHz, gated internally)
     output reg         ce_n,          // PSRAM CE# active-low
     output reg  [3:0]  sio_out,       // SIO[3:0] output to PSRAM
     input  wire [3:0]  sio_in,        // SIO[3:0] input from PSRAM
@@ -106,6 +106,9 @@ module psram_buf_ctrl (
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
+    reg  sck_en;
+    assign sck = sck_en & clk_32m;
+
     wire [ABITS-1:0] cur_wr = wr_ptr;
     wire [ABITS-1:0] cur_rd = rd_ptr;
 

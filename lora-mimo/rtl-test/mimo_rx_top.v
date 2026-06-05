@@ -30,7 +30,7 @@ module mimo_rx_top (
     output wire        REMOD_A_Q,
 
     // ---- PSRAM QPI (shared with JTAG pads at padframe level) ----
-    output wire        PSRAM_SCK_EN,  // gates 32 MHz to PSRAM CLK
+    output wire        PSRAM_SCK,     // PSRAM clock (32 MHz, gated in psram_buf_ctrl)
     output wire        PSRAM_CE_N,
     output wire [3:0]  PSRAM_SIO_OUT,
     input  wire [3:0]  PSRAM_SIO_IN,
@@ -285,11 +285,8 @@ module mimo_rx_top (
     assign energy_snap[1] = {noise_snap[1], 8'h0};
     assign energy_snap[2] = {noise_snap[2], 8'h0};
     assign energy_snap[3] = {noise_snap[3], 8'h0};
-    wire        energy_valid;
-    wire        energy_snapshot_valid;
     wire [9:0]  noise_metric [0:3];
     wire        noise_metric_valid;
-    assign energy_snapshot_valid = 1'b0;
     assign noise_metric[0] = 10'h0; assign noise_metric[1] = 10'h0;
     assign noise_metric[2] = 10'h0; assign noise_metric[3] = 10'h0;
     assign noise_metric_valid = 1'b0;
@@ -304,8 +301,7 @@ module mimo_rx_top (
         .dcr_q0 (dcr_q[0]), .dcr_q1 (dcr_q[1]),
         .dcr_q2 (dcr_q[2]), .dcr_q3 (dcr_q[3]),
         .noise_snap_0 (noise_snap[0]),  .noise_snap_1 (noise_snap[1]),
-        .noise_snap_2 (noise_snap[2]),  .noise_snap_3 (noise_snap[3]),
-        .noise_valid  (energy_valid)
+        .noise_snap_2 (noise_snap[2]),  .noise_snap_3 (noise_snap[3])
     );
 
     // =========================================================================
@@ -439,7 +435,7 @@ module mimo_rx_top (
         .iq_sample_cnt(iq_samp_cnt),
         .W_commit     (W_commit_hw),
         .packet_end   (packet_done_pulse),
-        .sck_en       (PSRAM_SCK_EN),
+        .sck          (PSRAM_SCK),
         .ce_n         (PSRAM_CE_N),
         .sio_out      (PSRAM_SIO_OUT),
         .sio_in       (PSRAM_SIO_IN),
