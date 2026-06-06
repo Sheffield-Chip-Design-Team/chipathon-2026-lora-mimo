@@ -56,7 +56,9 @@ OSR = 256 / 128 / 64 for 125 / 250 / 500 kHz BW respectively (32 MS/s / f_s). In
 
 **Integrator saturation.** Each integrator accumulator must clamp to ±(2^(width−1)−1) rather than wrap. Wrap-around causes instability that does not self-recover. Use saturating adders.
 
-**Input level constraint.** 3rd order ΣΔ modulators with Lee's criterion require input < −3 dBFS. The re-modulator receives int8 directly from the combiner. The combiner MRC output stage applies the ÷2 right-shift (absorbing √NR=4 combining gain); the bypass path delivers int8 directly with no ÷2, preserving the full per-branch amplitude. In both modes the remod receives a signal scaled to approximately per-branch decimator amplitude. The AGC is responsible for keeping per-branch amplitude below −3 dBFS; no additional scaling at the remod input is needed. The ÷2 in the MRC path costs 6 dB of dynamic range there, but with 8-bit input the in-band SQNR is already limited to ~44 dB after ÷2, which far exceeds LoRa requirements.
+**Input level constraint.** 3rd order ΣΔ modulators with Lee's criterion require input < −3 dBFS. The live RTL therefore includes a dedicated remod-facing linear backoff control after the combiner and before `sd_remod`. In bypass mode the remod receives the selected branch sample directly. In MRC mode the remod input is arithmetic right-shifted by `REMOD_BACKOFF_SHIFT` (register `0x37`, reset default `1`) before the sample is latched into the modulator. This keeps the hard remod safety policy separate from weight generation and avoids nonlinear clipping.
+
+The AGC still owns the **per-branch** operating point, but it is no longer the sole protection for the remodulator. Coherent 4-branch MRC can exceed the remod safe range even when each branch is individually within target, so the remod-facing backoff is the deterministic safety mechanism.
 
 **Clock domain.** Input is at f_s (in_valid strobe); modulator runs at 32 MHz. On `in_valid`, latch the input into a register and run the 3rd order loop at 32 MHz for the next 32 cycles.
 

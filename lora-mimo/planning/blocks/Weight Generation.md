@@ -428,6 +428,38 @@ The hardware path (`WGT_SRC=AUTO`) continues to use the equal-noise approximatio
 
 ---
 
+## Alternative normalization options under consideration
+
+The current hardware MRC path uses a shared shift-based backoff, but it is not a true output-bounding normalization. Coherent equal-strength branches can still drive the combiner into `int8` saturation before the remod input backoff stage. Two follow-on options are being considered:
+
+### Option A — stronger shift normalization in hardware
+
+Keep the current no-divider philosophy, but tighten the shared hardware scaling so the combined MRC output is bounded more conservatively before the `int8` combiner saturator. The intent is:
+
+- preserve MRC branch ratios
+- avoid reciprocal/divider hardware
+- reduce or eliminate combiner clipping in the equal-strong-branch corner
+
+Possible implementation directions:
+
+- increase the existing `mrc_shift` rule in `weight_gen` based on a more conservative coherent-sum bound
+- or add an additional linear right shift in the MRC datapath before final `int8` saturation
+
+This is still linear scaling, so it avoids the SNR/EVM damage of hard clipping. The trade-off is reduced remod-side SQNR from additional backoff.
+
+### Option B — full normalized weights in software
+
+Leave the hardened RTL path simple and move normalized weight computation to PicoRV32 firmware using `WGT_SRC=SW`. Firmware would:
+
+- read `Z_j`
+- compute normalized weights
+- write `W_SHADOW`
+- commit via the existing control path
+
+This keeps the hardware datapath simple and allows exact or near-exact normalization, but same-packet timing margin must be validated in firmware.
+
+At the moment, Option A is retained as a viable hardware fallback, while Option B remains the cleaner architectural path if firmware timing is acceptable.
+
 ## Future extensions
 
 ### EGC — Equal Gain Combining

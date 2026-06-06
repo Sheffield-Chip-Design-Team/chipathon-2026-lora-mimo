@@ -134,7 +134,7 @@ MRC Combiner — coherently adds NR=4 branches: output amplitude ≤ √NR × pe
 ΣΔ Re-modulator — requires input < −3 dBFS for stability
 ```
 
-The shift-MRC weight generator already adds branch-count headroom, and the combiner applies a fixed ÷2 guard shift before optional `COMB_POST_GAIN`. With reset `COMB_POST_GAIN=0`, the path is conservative. Firmware may raise `COMB_POST_GAIN` only after observing enough output headroom. The AGC target must keep **per-branch signal amplitude below −3 dBFS** (≤ 90 counts for int8 full scale = 127, i.e. 0.707 × 127).
+The shift-MRC weight generator already adds branch-count headroom, and the combiner applies a fixed ÷2 guard shift before optional `COMB_POST_GAIN`. A separate remod-input backoff (`REMOD_BACKOFF_SHIFT`, register `0x37`, reset default `1`) is then applied on the MRC path only. Firmware may raise `COMB_POST_GAIN` only after observing enough output headroom. The AGC target still must keep **per-branch signal amplitude below −3 dBFS** (≤ 90 counts for int8 full scale = 127, i.e. 0.707 × 127), but remod safety no longer depends on AGC alone.
 
 This single constraint, if met by the AGC, simultaneously satisfies:
 - Combiner MRC output has guard headroom under the default shift-MRC + fixed ÷2 scaling

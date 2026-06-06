@@ -219,6 +219,7 @@ These checks are intended to de-risk coherent combining before full packet-path 
 | Test | Method | Pass criterion |
 | --- | --- | --- |
 | Per-branch LO offset | Inject one common CW tone; capture 4 synchronized sigma-delta streams in FPGA; decimate and estimate `df_j` from inter-branch phase slope | Branch-to-branch frequency mismatch within defined drift budget |
+| RX DC offset stability | With RF input terminated and then with RF loopback/CW enabled, capture per-branch decimated I/Q over temperature, gain states, and time; estimate DC mean before any DSP high-pass removal | Decide whether RX DC can be treated as a one-time/per-gain calibration term or requires continuous DSP tracking |
 | LO drift vs time | Hold common CW tone; log `df_j` and `phi_j` over time from FPGA capture | Drift remains within packet-coherence budget |
 | LO drift vs temperature | Repeat common-tone FPGA capture across temperature range | No branch exceeds allowed differential drift |
 | RX gain mismatch | Inject one common CW tone; estimate `G_j_dB` from fitted branch tone amplitude | Gain spread within calibration budget |
