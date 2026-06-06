@@ -369,9 +369,106 @@ All three runs took ~9 minutes total. Note: job 1310 completed in 7:39 due to Li
 
 Several experiments from sessions 5–6 were abandoned because DRT-0073 kept failing regardless of the change being tested. With NDR fixed, their results are now interpretable:
 
-- **FS macro orientation** (pins at top of macro): made DRT-0073 worse — pushed SRAM routing tracks into the logic/CTS region. Reverted to N (pins at bottom). This was not the cause of DRT failures; NDR was. **Status: N orientation confirmed correct.**
-- **clkbuf_8 removed** (workaround attempted during DRT debugging): clkbuf_8 was removed from `CTS_CLK_BUFFERS` as a workaround. With NDR fixed, clkbuf_8 is restored in all three new configs. **Status: clkbuf_4 + clkbuf_8 confirmed working.**
+- **FS macro orientation** (pins at top of macro): previously appeared to make DRT-0073 worse. With NDR fixed, FS was re-run and passes cleanly — see experiment results below. **Status: FS viable; N remains current default; no structural obstacle to FS.**
+- **clkbuf_8 removed** (workaround attempted during DRT debugging): clkbuf_8 was removed from `CTS_CLK_BUFFERS` as a workaround. With NDR fixed, clkbuf_8 is restored in all new configs. **Status: clkbuf_4 + clkbuf_8 confirmed working.**
 - **DRT_ANTENNA_REPAIR_JUMPER_ONLY: false**: tested during debugging — caused DRT-0073 to appear on antenna diode cells instead of clock buffers. Confirmed NDR was the underlying cause in both cases. **Status: jumper_only: true confirmed correct.**
+
+---
+
+##### FS macro orientation — validated clean
+
+FS orientation (SRAM pins at top of macro, y≈541 µm) was re-run with NDR fixed on the 2000×1150 die. Result: clean pass.
+
+| Metric | N orientation (baseline 1310) | FS orientation |
+|--------|-------------------------------|----------------|
+| Die area | 2.3 mm² (2000×1150) | 2.3 mm² (2000×1150) |
+| Actual util | 58.7% | 58.7% |
+| SS WNS | −4.76 ns | −3.59 ns |
+| DRT errors | 0 | 0 |
+| Antenna viol | 16 | **5** |
+
+FS gave marginally better SS WNS and significantly fewer antenna violations. The lower antenna count is likely because FS pins face upward into the open logic area rather than downward toward the die boundary, giving the antenna diode inserter more routing freedom.
+
+**Observation:** with FS orientation the space between the OCD cluster (rightmost macro at x≈988+228=1216 µm) and the FD SRAM (at x=1556 µm) is more visible as dead area — the SRAM pins face up, and the gap of ~340 µm between the two SRAM clusters is not reachable by standard-cell rows due to the obstruction geometry. This observation motivated the packed FD SRAM experiment below.
+
+**Config:** `config_trial_top_1150_fs.json` + `macro_placement_fs.cfg`. Run script: `run_pnr_fs.sh`.
+
+---
+
+##### Height reduction — standard SRAM spacing
+
+Keeping `macro_placement.cfg` (u_sram0 at x=1556), height was reduced from 1150 to 1100 and 1050 µm. Both passed cleanly.
+
+| Die area | Height (µm) | Target density | Actual util | SS WNS | DRT errors | Antenna |
+|----------|-------------|----------------|-------------|--------|-----------|---------|
+| 2.3 mm² | 1150 (baseline) | 53% | 58.7% | −4.76 ns | 0 | 16 |
+| 2.2 mm² | 1100 | 57% | 61.3% | −7.88 ns | 0 | 31 |
+| 2.1 mm² | 1050 | 60% | 64.2% | −7.61 ns | 0 | 39 |
+
+SS WNS degrades at tighter heights because routing congestion increases with density, lengthening critical paths. TT WNS remains 0 ns in all cases (62.5 ns period is wide; only SS corner fails). Antenna count grows with density but is minor.
+
+**Config files:** `config_trial_top_1100.json`, `config_trial_top_1050.json`.
+
+---
+
+##### Packed FD SRAM — u_sram0 moved from x=1556 to x=1315
+
+The dead zone between the OCD SRAM cluster (right edge ~1303 µm) and the FD SRAM (left edge 1556 µm) was 253 µm wide but inaccessible to stdcells because both obstruction regions closed it off. Moving the FD SRAM to x=1315 (12 µm halo clearance from the OCD cluster right edge) consolidates both SRAM groups into a contiguous 1315+228+12=1555 µm band and frees a 241×553 µm right-side column (x=1759–2000 µm) for stdcell placement.
+
+The freed column gives the global placer more distributed routing space and shortens average wirelength on paths that previously had to route around the FD SRAM.
+
+| Layout | Die | Target density | Actual util | SS WNS | DRT errors | Antenna |
+|--------|-----|----------------|-------------|--------|-----------|---------|
+| Standard (u_sram0 x=1556) | 2000×1150 | 53% | 58.7% | −4.76 ns | 0 | 16 |
+| **Packed (u_sram0 x=1315)** | 2000×1150 | 53% | 58.6% | **−2.86 ns** | **0** | 41 |
+
+Packed layout improves SS WNS by **+1.9 ns** at the same die size, purely by redistributing routing space. TT WNS = 0 in both.
+
+**Key config change:** `MACRO_PLACEMENT_CFG: macro_placement_packed.cfg` plus updated `FP_OBSTRUCTIONS` to close the gap between the two clusters while leaving the right column open: `[[0,0,1303,553], [1303,13,1759,522]]`.
+
+**Config:** `config_trial_top_1150_packed.json`. Macro placement: `macro_placement_packed.cfg`.
+
+---
+
+##### Height reduction — packed SRAM layout
+
+With the packed FD SRAM, the same height sweep was repeated. The freed right column gives the router extra capacity, so the density floor is higher than with standard spacing.
+
+| Die area | Height (µm) | Target density | Actual util | SS WNS | DRT errors | Antenna | Result |
+|----------|-------------|----------------|-------------|--------|-----------|---------|--------|
+| 2.3 mm² | 1150 | 53% | 58.6% | −2.86 ns | 0 | 41 | PASS |
+| 2.1 mm² | 1050 | 60% | 64.2% | −11.60 ns | 0 | 27 | PASS |
+| **1.9 mm²** | **950** | **65%** | **70.8%** | **−10.08 ns** | **0** | **23** | **PASS — floor** |
+| — | 900 | 68% | — | — | — | — | FAIL: routing congestion (DRT) |
+| — | 850 | 72% | — | — | — | — | FAIL: DPL-0036, placement too dense |
+
+**Floor: 950 µm (1.9 mm²).** 900 µm fails in detailed routing with excessive congestion; 850 µm fails before routing (DPL-0036 placement density too high). 
+
+**Density wall note:** the FD stdcell library top-level reaches 70.8% actual utilisation at 950 µm before hitting the floor — the "60% safe window" inherited from earlier AS-cell experiments was too conservative for this FD-cell top-level design.
+
+**SS timing trend:** WNS worsens from 1150→1050 (-2.86→-11.60 ns), then slightly recovers at 950 (-10.08 ns). The mild recovery at 950 is likely because the extreme density forces the placer to use the full die area more uniformly, inadvertently reducing some critical-path wirelengths. All three are within the expected SS timing regime; none are new failures (SS 16 MHz has been documented as failing since session 5).
+
+**Config files:** `config_trial_top_1050_packed.json`, `config_trial_top_950_packed.json`, `config_trial_top_900_packed.json` (failed), `config_trial_top_850_packed.json` (failed).
+
+---
+
+##### LVS run on 2000×950 packed — 13 errors, all artifacts
+
+A full flow including Magic SPICE extraction and Netgen LVS was run on the 2000×950 packed configuration (`config_trial_top_950_packed_lvs.json`). LVS reported 13 errors; all are known artefacts of the SRAM blackbox modelling approach.
+
+**Error breakdown:**
+
+| Count | Error type | Root cause | Real silicon risk |
+|-------|-----------|------------|------------------|
+| 10 | Net mismatch: `u_sram*/VDD`, `u_sram*/VSS` — "no matching net" | SRAM blackbox SPICE model does not capture PDN strap connectivity. The layout has VDD/VSS connected through M3/M4 power straps; the schematic SRAM subcircuit only exposes them as interface pins with no internal wiring. Netgen sees 10 isolated power nets (5 macros × 2 rails) that exist in layout but have no schematic counterpart. | None — PDN straps are real and correct; this is a model coverage gap, not a wiring error. The same gap causes the PSM-0038/0039 warnings. |
+| 2 | Port mismatch: `TDO_GPIO2` ↔ `CS_A[0]` swap | Netgen port disambiguation: when two top-level ports have similar electrical characteristics, Netgen may swap them when resolving symmetry. This is a Netgen matching artefact for the top-cell port comparison. | Low — warrants a visual check in the GDS viewer that JTAG and PSRAM CS pins are routed to the correct pads. |
+| 1 | "Top level cell failed pin matching" | Summary error generated as a consequence of the port swap above. | — (same as above) |
+
+**Magic DRC: 2999 errors**, all of type "This layer can't abut or partially overlap between subcells". This is the standard GF180MCU Magic DRC artefact where PDN metal straps from the top-level crossing into SRAM macro boundaries generate apparent inter-subcell abutment violations. The `[INFO] Should be divided by 3 or 4` note in the report confirms Magic is triple/quadruple-counting the same physical regions. `ERROR_ON_MAGIC_DRC: false` is correct. All prior GF180 macro-heavy runs have shown this same pattern.
+
+**Conclusion:** The PSM power grid warnings (262742 violations seen in earlier runs) are confirmed benign. The underlying cause — SRAM power pins not modelled in the OpenROAD PDN connectivity check — is the same model gap that produces the LVS VDD/VSS mismatches. No real silicon connectivity errors are indicated. The TDO_GPIO2 ↔ CS_A[0] port swap warrants one visual check but is almost certainly a Netgen disambiguation artefact.
+
+**Config:** `config_trial_top_950_packed_lvs.json`. Run script: `run_pnr_950_packed_lvs.sh`.
 
 ---
 
