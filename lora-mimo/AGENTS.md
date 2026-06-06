@@ -30,7 +30,21 @@ librelane --pdk-root /foss/designs/pdk_overlay_as \
 
 Config files that use AS cells must set `LIB` to
 `dir::../../ip/gf180mcu_as_sc_mcu7t3v3/pdk/libs.ref/gf180mcu_as_sc_mcu7t3v3/lib/*.lib`
-and `CTS_CLK_BUFFERS` / `CTS_ROOT_BUFFER` to `gf180mcu_as_sc_mcu7t3v3__buff_*`.
+and use the dedicated **`clkbuff_*`** cells for CTS (not `buff_*` — those cause DRT-0073):
+
+```json
+"CTS_ROOT_BUFFER": "gf180mcu_as_sc_mcu7t3v3__clkbuff_12",
+"CTS_CLK_BUFFERS": [
+    "gf180mcu_as_sc_mcu7t3v3__clkbuff_4",
+    "gf180mcu_as_sc_mcu7t3v3__clkbuff_8",
+    "gf180mcu_as_sc_mcu7t3v3__clkbuff_12"
+]
+```
+
+Also set `FP_CORE_UTIL` to **50** minimum (not the old FD default of 15–20%). Below ~50% util the
+CTS root buffer lands in a sparse dead zone and DRT-0073 recurs even with correct clkbuff cells.
+Above ~60% util the density wall kicks in (DRT-0073 from congestion). Safe window: **50–60% util / 55–65% density**.
+
 See `ol_sd_decimator_cic_only/config_as_mcu7t3v3.json` for a working example.
 
 **If the overlay is missing or broken**, rebuild it once via SGE:
