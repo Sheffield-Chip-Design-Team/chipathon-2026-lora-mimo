@@ -121,7 +121,7 @@ module mimo_rx_top (
     // mrc_combiner.mode=1 (single-antenna bypass) vs mode=0 (4-antenna MRC).
     //
     // TDM+FIR upgrade (−86 k µm² vs this, full sensitivity): see
-    // planning/sd_decimator-tdm-refactor.md — implement if area/time permit.
+    // planning/blocks/ΣΔ Decimator.md, section Optional FIR Upgrade — implement if area/time permit.
     // =========================================================================
     wire signed [7:0] dec_i [0:3];
     wire signed [7:0] dec_q [0:3];
@@ -149,9 +149,6 @@ module mimo_rx_top (
         .decim_ratio(rb_decim_ratio),
         .iq_out_i(dec_i[3]), .iq_out_q(dec_q[3]), .iq_valid(dec_valid_all[3]));
 
-    // =========================================================================
-    // Stage 2: DC Removal removed — AFE PCB characterisation confirmed AC-coupled.
-    // dcr_* wires feed directly from CIC decimator outputs.
     // =========================================================================
     // Stage 2: DC Removal ×4 — simplified IIR, α=2^{-4}, 12-bit Q8.4 accumulator.
     // SX1257 is zero-IF with no on-chip receiver DC cancellation; this block
