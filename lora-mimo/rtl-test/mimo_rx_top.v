@@ -2,12 +2,14 @@
 // Top-level integration: NT=1 NR=4 MRC MIMO receive-only ASIC
 // GF180MCU 3.3V 32 MHz — SSCS PICO Chipathon 2026
 //
-// Pad count: 4+4+1+2+3+2+1+1+4 = 22 signal pads + 2 VDD + 1 GND = 25 total
+// Pad count: 2+8+2+6+6+4 = 28 signal pads (clk/rst, IQ×8, remod×2,
+//            PSRAM SCK+CE_N+SIO×4, SPI HOST_CS/SCK/MOSI/MISO/CS_A×2,
+//            JTAG/IRQ TCK_IRQ/TMS/TDI/TDO)
 //
 // Signal flow:
 //   SX1257[0..3] 1-bit IQ → sd_decimator×4 → dc_removal → frontend_buf_ctrl
-//   → sc_detector → training_acc → weight_gen → mrc_combiner → sd_remod
-//   → SX1302 Radio A (1-bit IQ)
+//   → sc_detector → training_acc → [SW weights via reg_bank] → mrc_combiner
+//   → sd_remod → SX1302 Radio A (1-bit IQ)
 //
 // Control plane:
 //   spi_slave (RPi) → reg_bank ← ahb_lite_bus ← picorv32_wrap
@@ -176,8 +178,8 @@ module mimo_rx_top (
     // =========================================================================
     // Stage 3a: Frontend Buffer Controller (rolling SRAM window)
     // =========================================================================
-    // Frontend buffer SRAM — single 512x8 macro for the current NR=2 acquisition path.
-    // SC currently consumes only branches 0 and 1, so the second DSP SRAM macro is omitted.
+    // Frontend buffer SRAM — single 512x8 macro. All 4 branches are written;
+    // SC detector reads only branch 0 (cur/del). Second SRAM macro omitted.
     wire [8:0]  sram0_A, sram1_A;
     wire [7:0]  sram0_D, sram1_D;
     wire [7:0]  sram0_Q;
@@ -271,9 +273,9 @@ module mimo_rx_top (
     );
 
     // =========================================================================
-    // Stage 3c: Energy Measurement removed — firmware uses PSRAM IQ readback.
-    // Replaced by lightweight noise_est block (Manhattan norm, no multipliers).
-    // noise_snap[k] readable at reg_bank 0x40–0x47 (same slot as old energy_snap).
+    // Stage 3c: Noise estimation — noise_est (Manhattan norm, no multipliers)
+    // replaces the old energy_meas block. noise_snap[k] forwarded to reg_bank
+    // via energy_snap (zero-padded to 16-bit) at 0x40–0x47.
     // =========================================================================
     wire [7:0]  noise_snap  [0:3];
     // energy_snap zero-padded to 16-bit for downstream consumers (packet_ctrl_fsm, reg_bank)
@@ -329,9 +331,9 @@ module mimo_rx_top (
     );
 
     // =========================================================================
-    // Stage 5: Coarse FW noise metric readback
-    // The legacy sigma2 register path is temporarily repurposed to expose the
-    // zero-extended per-branch coarse noise metric to firmware.
+    // Stage 5: sigma2 register path — noise_metric[] currently tied to 0 so
+    // sigma2_hw/sigma2_valid always read zero. Scaffolding retained for future
+    // HW noise estimator; firmware reads coarse noise via energy_snap instead.
     // =========================================================================
     wire [15:0] sigma2_hw [0:3];
     wire        sigma2_valid;
