@@ -242,12 +242,12 @@ See [MRC Combiner](blocks/ALMMSE-MRC%20Combiner.md).
 
 3rd order feed-forward ΣΔ modulator converts combined int8 samples back to a 32 MS/s bitstream for the SX1302 Radio A input. The combiner MRC output stage applies ÷2 (absorbing √NR=4 combining gain) before delivering int8; the bypass path delivers int8 directly.
 
-| BW | f_s (combiner output) | OSR | In-band SQNR (3rd order) |
-| --- | --- | --- | --- |
-| 125 kHz | 125 kS/s | 256 | > 130 dB |
-| 250 kHz | 250 kS/s | 128 | > 115 dB |
-| 500 kHz | 500 kS/s | 64 | > 100 dB |
-| 500 kHz (2×) | 1 MS/s | 32 | > 85 dB |
+| BW | f_s (combiner output) | OSR | In-band SQNR (3rd order) | Status |
+| --- | --- | --- | --- | --- |
+| 125 kHz | 250 kS/s | 128 | > 115 dB | Deployed (2× oversampled; decimator R=128 for both BW modes) |
+| 250 kHz | 250 kS/s | 128 | > 115 dB | Deployed |
+| 500 kHz | 500 kS/s | 64 | > 100 dB | Extension — requires TDM+FIR decimator |
+| 500 kHz (2×) | 1 MS/s | 32 | > 85 dB | Extension — requires TDM+FIR decimator |
 
 All OSR values give SQNR far exceeding LoRa requirements. The 8-bit input gives ~44 dB effective SQNR (after ÷2); the quantisation noise floor is negligible at all supported bandwidths.
 
