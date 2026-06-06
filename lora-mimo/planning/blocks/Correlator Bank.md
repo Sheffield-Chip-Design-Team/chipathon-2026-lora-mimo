@@ -49,7 +49,7 @@ Since the LoRa chirp has constant amplitude, `|chirp_ref[n mod M]|² = 1` for al
 c_j = Σ_n current_j[n] · conj(delayed_j[n])
 ```
 
-where `current_j[n]` and `delayed_j[n]` are the current and M-sample-delayed raw samples provided by the FRONTEND_BUF.
+where `current_j[n]` and `delayed_j[n]` are the current and delayed raw samples provided by the FRONTEND_BUF. For `SF6–SF8`, this is a full-symbol delay because `L=M`. For `SF9–SF12`, the FRONTEND_BUF only stores the first `L=256` phases of each symbol block, so `delayed_j[n]` exists only on that stored phase subset rather than for every one of the `M` phases.
 
 ---
 
@@ -69,11 +69,13 @@ Samples/symbol = 2^SF exactly for all SF (integer M — no fractional timing). A
 
 ## Function
 
-For each receive branch `j`, SC maintains a sliding-window complex autocorrelation over adjacent M-sample windows:
+For each receive branch `j`, SC maintains a block-based complex autocorrelation over the valid stored-phase region of adjacent symbol blocks:
 
 ```
-c_j = Σ_{n=0}^{M-1} current_j[n] · conj(delayed_j[n])
+c_j = Σ_{n in stored phase set} current_j[n] · conj(delayed_j[n])
 ```
+
+For `SF6–SF8`, the stored phase set spans the full symbol (`L=M`). For `SF9–SF12`, it spans only the first `256` samples of each symbol block (`L=256`), so this is not a full-symbol sliding correlator.
 
 ### Detection statistic
 
@@ -168,8 +170,8 @@ FRONTEND_BUF
 | `rst_n` | in | 1 | — | Active-low reset |
 | `iq_valid` | in | 1 | 125 kS/s | Sample strobe from decimator (32 MHz / R=256) — used as clock enable |
 | `current_j[3:0]` | in | 4×2×8 | f_s | Current raw samples from FRONTEND_BUF (I+Q per branch, 8-bit saturated) |
-| `delayed_j[3:0]` | in | 4×2×8 | f_s | M-delayed raw samples from FRONTEND_BUF (I+Q per branch, 8-bit saturated) |
-| `delayed_valid` | in | 1 | f_s | FRONTEND_BUF delayed sample valid (gated until buffer has ≥ M samples) |
+| `delayed_j[3:0]` | in | 4×2×8 | f_s | Delayed raw samples from FRONTEND_BUF (full-symbol delay for SF6–SF8; stored-phase subset only for SF9–SF12) |
+| `delayed_valid` | in | 1 | f_s | FRONTEND_BUF delayed sample valid; high only when the stored-phase delayed sample exists |
 | `sf` | in | 3 | static | Spreading factor; sets M = 2^SF |
 | `sc_thr` | in | 16 | static | Detection threshold θ_SC (Q1.15); from `SC_THR` register |
 | `sc_hits_req` | in | 2 | static | Consecutive hits required for lock; from `SC_HITS_REQ` register |
@@ -190,7 +192,7 @@ FRONTEND_BUF
 
 | Parameter | Value | Notes |
 |---|---|---|
-| Detection window | 2M samples | Sliding; updated every M samples; window history held in FRONTEND_BUF |
+| Detection window | 2L samples per evaluated block | `L=min(M,256)`; full-symbol for SF6–SF8, partial-window for SF9–SF12 |
 | Lock hold | 1–3 consecutive hits | Runtime via `SC_HITS_REQ`; default 2 |
 | Threshold θ_SC | 0.90 (default) | Programmable via `SC_THR` |
 | Accumulator width | int32 for c_j, int64 for Mag_SC / Energy_Ref | See arithmetic widths below |

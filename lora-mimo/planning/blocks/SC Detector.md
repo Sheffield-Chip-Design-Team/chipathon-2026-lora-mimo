@@ -9,11 +9,11 @@ RX path stage 3b. Schmidl-Cox preamble detector — locks onto the LoRa preamble
 
 ## Function
 
-Computes the Schmidl-Cox metric using a block-based correlator with L = min(M, 256) samples per symbol block, where M = 2^SF. SF6: L=64, SF7: L=128, SF8: L=256 (all full-symbol). SF9–SF12: L=256 (sub-symbol, 3–12 dB integration loss, acceptable given preamble repetition and downstream timing refiner).
+Computes the Schmidl-Cox metric using a block-based correlator with `L = min(M, 256)` samples per symbol block, where `M = 2^SF` is the full symbol length. For `SF6–SF8`, `L=M`, so the detector sees the full symbol. For `SF9–SF12`, `L=256`, so the detector compares only the stored phase subset of each symbol block rather than a true full-symbol circular `M`-sample delay. The ignored phase region contributes no correlation energy; this is the documented 3–12 dB integration loss accepted to keep the buffer to one 512x8 SRAM macro.
 
 ```
-|C|² = (Σ x*[n] · x[n−M])²    (complex correlation)
-E     = Σ |x[n]|² · Σ |x[n−M]|²   (normalisation energy)
+|C|² = (Σ_{n in stored phase set} x*[n] · x[n−M])²
+E     = Σ_{n in stored phase set} |x[n]|² · Σ_{n in stored phase set} |x[n−M]|²
 lock  = |C|² > sc_thr · E  for sc_hits_req+1 consecutive symbols
 ```
 
@@ -29,8 +29,8 @@ On lock, `timing_ref` is set to the sample index of the first valid symbol bound
 | `rst_n` | in | 1 | Active-low async reset |
 | `iq_valid` | in | 1 | New sample available |
 | `cur_i0/q0` | in | 8 | Current sample (antenna 0, I/Q) |
-| `del_i0/q0` | in | 8 | Delayed sample (M samples ago) |
-| `delayed_valid` | in | 1 | Delay buffer has filled (M samples) |
+| `del_i0/q0` | in | 8 | Delayed sample from the stored phase subset of the previous symbol block |
+| `delayed_valid` | in | 1 | Delay buffer has produced a valid stored-phase delayed sample; deasserted during the ignored phase region |
 | `sf` | in | 4 | Spreading factor select (only SF6 special-cases M) |
 | `sc_thr` | in | 16 | Threshold (firmware; see note below) |
 | `sc_hits_req` | in | 2 | Number of consecutive hits required before lock |
@@ -48,6 +48,8 @@ On lock, `timing_ref` is set to the sample index of the first valid symbol bound
 ## Architecture
 
 ### TDM per-sample accumulator (8 steps)
+
+At `SF9–SF12`, the accumulator is only active during the stored `L=256` phase region of each `M`-sample symbol. This is a partial-window correlator, not a full `M`-sample sliding circular correlator.
 
 One 8×8 signed multiplier shared across all per-sample products.  Each sample
 triggers an 8-step TDM FSM:

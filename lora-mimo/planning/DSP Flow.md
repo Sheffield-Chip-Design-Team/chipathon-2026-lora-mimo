@@ -81,7 +81,7 @@ remod_a_in = x[bypass_sel][n]   // int8 directly; no sign-extension needed
 
 ## Stage 2 — ΣΔ Decimation
 
-Programmable CIC filter decimates the 32 MS/s bitstream to match the LoRa bandwidth. This ensures all downstream DSP blocks see exactly one symbol per 2^SF samples.
+Programmable CIC filter decimates the 32 MS/s bitstream to the internal IQ rate used by the receive chain. In the deployed design, both supported LoRa bandwidths use `decim_ratio=1` and therefore run at 250 kS/s; 125 kHz mode is intentionally 2x oversampled while 250 kHz mode is 1x Nyquist.
 
 | BW Selection | Ratio (R) | Sample Rate (f_s) | decim_ratio | Notes |
 | --- | --- | --- | --- | --- |

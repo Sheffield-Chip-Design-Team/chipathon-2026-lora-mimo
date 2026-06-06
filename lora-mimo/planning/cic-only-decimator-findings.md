@@ -1,11 +1,8 @@
 # CIC-only Decimator: Findings
 
-> **Status (2026-06-03, updated):** CIC-only IS the deployed solution. The FIR is dropped.
-> See addendum below for the revised operating point and rationale.
->
-> **Status (2026-05-31, original):** RTL simulation complete (SGE job 1102). CIC-only is NOT
-> viable as a drop-in replacement for the primary 125 kHz LoRa mode at R=256.
-> The FIR remains required. TDM sharing (`sd_fir_mac`) is still the correct area lever.
+> **Status (2026-06-03):** CIC-only is the **deployed** solution.
+> `sd_decimator_cic_only.v` is the production decimator module for all supported modes.
+> 500 kHz BW is not supported and is outside the system specification.
 
 ## Background
 
@@ -63,41 +60,15 @@ real alias noise in the RTL at R=64.
 **Lesson**: floating-point CIC models are inadequate for predicting alias noise at
 low oversampling ratios. RTL simulation with a real ±1 sigma-delta stimulus is required.
 
-## Conclusion
+## Deployed operating point
 
-CIC-only is **not viable** for this design:
+The raw SQNR results above tested CIC-only as a drop-in for a digital-to-digital chain
+where the downstream demodulator was on-chip. That assumption is wrong for this design:
+**the LoRa demodulator is off-chip (SX1302)**. The ASIC output goes through `sd_remod`
+which always produces a 32 MHz ΣΔ bitstream regardless of internal IQ rate.
 
-| Mode | Verdict | Reason |
-|---|---|---|
-| 125 kHz BW (R=256) | **FAIL** (27.2 dB, miss by 0.8 dB on I) | FIR compensates −7.3 dB CIC droop |
-| 250 kHz BW (R=128) | PASS (30.3/30.6 dB) | Lower relative droop, low alias noise |
-| 500 kHz BW (R=64) | **FAIL** (9.6 dB) | Sigma-delta alias noise, CIC alone insufficient |
-| 1 MS/s (R=32) | **FAIL** (1.8 dB) | Low OSR, both variants fail |
-
-The FIR serves two distinct roles:
-1. **Signal boost**: compensates −7.3 dB CIC droop at band edge, increasing signal amplitude
-   before 8-bit quantisation (≈ 2.4× = +7.5 dB), which matters for quantisation SNR.
-2. **Alias noise suppression at low R**: the 9-tap temporal window reduces sigma-delta
-   alias noise by ~20 dB at R=64 where CIC alias rejection is marginal.
-
-## Impact on the TDM refactor plan
-
-CIC-only saving would have been ~26 k µm² post-TDM (eliminating `sd_fir_mac` + 4×
-`sd_fir_state`). This saving is now closed.
-
-**The TDM refactor (`sd_fir_mac` + `sd_cic_chan`) remains the correct path.** One shared
-FIR MAC for 4 channels is still required; it costs ~20 k µm² total (vs 380 k for 4×
-instances today). The RTL is already written (`sd_fir_mac.v`, `sd_cic_chan.v`,
-`sd_fir_state.v`); proceed to `sd_decimator_top.v` integration and verification.
-
-## Addendum — 2026-06-03: CIC-only deployed at R=128
-
-The original conclusion was based on a single-antenna digital-to-digital chain where the
-downstream demodulator was on-chip and expected a specific IQ sample rate. That assumption
-was wrong: **the LoRa demodulator is off-chip (SX1302)**. The ASIC output goes through
-`sd_remod` which always produces a 32 MHz ΣΔ bitstream regardless of internal IQ rate.
-
-This changes the operating point:
+This changes the operating point. Both supported LoRa bandwidths use `decim_ratio=1`
+(R=128) in the deployed design:
 
 | Mode | R | decim_ratio | cic_only SQNR | Verdict |
 |---|---|---|---|---|
@@ -119,8 +90,8 @@ This changes the operating point:
 worse (1.8 dB). This is a fundamental CIC alias rejection limit, not fixable by
 oversampling. 500 kHz BW requires the FIR and is outside the system specification.
 
-**FIR status:** Dropped from the design. `sd_decimator_cic_only.v` is now the production
-decimator module. Area saving vs combchain: ~75 k µm² per instance (4 instances = ~300 k µm²).
+**FIR status:** Dropped from the design. Area saving vs combchain: ~75 k µm² per
+instance (4 instances = ~300 k µm²).
 
 **Firmware init:** Set reg 0x12 `decim_ratio = 2'b01` at startup for both 125 and 250 kHz BW.
 
@@ -128,6 +99,6 @@ decimator module. Area saving vs combchain: ~75 k µm² per instance (4 instance
 
 | File | Purpose |
 |---|---|
-| `rtl-test/sd_decimator_cic_only.v` | CIC-only RTL (archived for reference; not used in design) |
+| `rtl-test/sd_decimator_cic_only.v` | Production CIC-only decimator (deployed in `mimo_rx_top`) |
 | `rtl-test/syn_mimo_per_module/run_sqnr_cic_only.sh` | A/B SQNR test script |
 | `rtl-test/syn_mimo_per_module/out_sqnr_cic_only/` | RTL output files + log (NFS only) |
