@@ -18,7 +18,16 @@ Integrators must saturate — not wrap — to ensure stability.
 Input must be kept below −3 dBFS for stable operation.
 ```
 
-OSR = 256 / 128 / 64 for 125 / 250 / 500 kHz BW respectively (32 MS/s / f_s). In-band SQNR > 100 dB at the lowest OSR (64, 500 kHz BW). The 8-bit input gives ~50 dB in-band SQNR, which exceeds LoRa decoding requirements by > 50 dB at all operating SNRs.
+In the deployed design both supported LoRa bandwidths run at f_s = 250 kS/s (decimator R=128), giving OSR = 128 for both 125 kHz and 250 kHz BW modes. 500 kHz BW (OSR=64) and 1 MS/s (OSR=32) are reserved as extensions contingent on the TDM+FIR decimator fitting in the floorplan.
+
+| BW | f_s | OSR | In-band SQNR | Status |
+| --- | --- | --- | --- | --- |
+| 125 kHz | 250 kS/s | 128 | > 115 dB | Deployed |
+| 250 kHz | 250 kS/s | 128 | > 115 dB | Deployed |
+| 500 kHz | 500 kS/s | 64 | > 100 dB | Extension — TDM+FIR required |
+| 500 kHz (2×) | 1 MS/s | 32 | > 85 dB | Extension — TDM+FIR required |
+
+The 8-bit input gives ~44 dB effective SQNR (after ÷2 backoff); all OSR values give ΣΔ noise floor well below the quantisation limit.
 
 ---
 
@@ -42,7 +51,7 @@ OSR = 256 / 128 / 64 for 125 / 250 / 500 kHz BW respectively (32 MS/s / f_s). In
 | Parameter | Value | Notes |
 | --- | --- | --- |
 | Modulator order | 3 | Feed-forward topology |
-| OSR | 256 / 128 / 64 | 32 MS/s / f_s; 125 kHz BW → OSR=256, 250 kHz → 128, 500 kHz → 64 |
+| OSR | 128 (deployed) / 64 / 32 (extension) | Deployed: both BW modes at f_s=250 kS/s → OSR=128; 500 kHz/1 MS/s extensions require TDM+FIR |
 | Integrator width | 12-bit signed | 8-bit input + 4 bits stability headroom; prevents saturation at full-scale input |
 | Feed-forward coefficients | Per NTF design | Optimise for SQNR; see Lee/Schreier DELSIG reference |
 | Input ÷2 shift | Fixed 1-bit right-shift | Applied in the combiner MRC output stage (not here); bypass path receives no ÷2 |
