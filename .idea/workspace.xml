@@ -5,10 +5,9 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="cfbb528c-72ad-47ff-a60e-037b0e4a17c3" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/lora-mimo/gnu-radio/sd_ord1.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/lora-mimo/gnu-radio/sd_ord2.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lora-mimo/gnu-radio/calc_sigma_delta_coefficients.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/lora-mimo/gnu-radio/SDQ_test.grc" beforeDir="false" afterPath="$PROJECT_DIR$/lora-mimo/gnu-radio/SDQ_test.grc" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/lora-mimo/gnu-radio/SD_comparison.grc" beforeDir="false" afterPath="$PROJECT_DIR$/lora-mimo/gnu-radio/SD_comparison.grc" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -37,15 +36,18 @@
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
     "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "Python.calc_sigma_delta_coefficients.executor": "Run",
     "Python.coeffs.executor": "Run",
+    "Python.compare_CIFF_modulators.executor": "Run",
     "Python.convert_iq.executor": "Run",
+    "Python.fix_deltasigma_compat.executor": "Run",
     "Python.sd_time_freq_sim.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.git.unshallow": "true",
     "RunOnceActivity.typescript.service.memoryLimit.init": "true",
     "codeWithMe.voiceChat.enabledByDefault": "false",
     "git-widget-placeholder": "gnu-radio",
-    "last_opened_file_path": "/home/vendasky/Projects/chipathon-2026/lora-mimo/gnu-radio",
+    "last_opened_file_path": "/home/vendasky/Projects/chipathon-2026",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
     "node.js.selected.package.eslint": "(autodetect)",
@@ -59,7 +61,31 @@
       <recent name="$PROJECT_DIR$/lora-mimo/gnu-radio" />
     </key>
   </component>
-  <component name="RunManager" selected="Python.sd_time_freq_sim">
+  <component name="RunManager" selected="Python.compare_CIFF_modulators">
+    <configuration name="calc_sigma_delta_coefficients" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="chipathon-2026" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/lora-mimo/gnu-radio" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="DEBUG_JUST_MY_CODE" value="false" />
+      <option name="RUN_TOOL" value="" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/lora-mimo/gnu-radio/calc_sigma_delta_coefficients.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
     <configuration name="coeffs" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="chipathon-2026" />
       <option name="ENV_FILES" value="" />
@@ -84,7 +110,7 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
-    <configuration name="convert_iq" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+    <configuration name="compare_CIFF_modulators" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="chipathon-2026" />
       <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
@@ -93,13 +119,37 @@
         <env name="PYTHONUNBUFFERED" value="1" />
       </envs>
       <option name="SDK_HOME" value="" />
-      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/lora-mimo/sim/examples" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/lora-mimo/gnu-radio" />
       <option name="IS_MODULE_SDK" value="true" />
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
       <option name="DEBUG_JUST_MY_CODE" value="false" />
       <option name="RUN_TOOL" value="" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/lora-mimo/sim/examples/convert_iq.py" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/lora-mimo/gnu-radio/compare_CIFF_modulators.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration name="fix_deltasigma_compat" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="chipathon-2026" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/lora-mimo/gnu-radio" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="DEBUG_JUST_MY_CODE" value="false" />
+      <option name="RUN_TOOL" value="" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/lora-mimo/gnu-radio/fix_deltasigma_compat.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
       <option name="EMULATE_TERMINAL" value="false" />
@@ -134,9 +184,11 @@
     </configuration>
     <recent_temporary>
       <list>
+        <item itemvalue="Python.compare_CIFF_modulators" />
+        <item itemvalue="Python.calc_sigma_delta_coefficients" />
+        <item itemvalue="Python.fix_deltasigma_compat" />
         <item itemvalue="Python.sd_time_freq_sim" />
         <item itemvalue="Python.coeffs" />
-        <item itemvalue="Python.convert_iq" />
       </list>
     </recent_temporary>
   </component>
