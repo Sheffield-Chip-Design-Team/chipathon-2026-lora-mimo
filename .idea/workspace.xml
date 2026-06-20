@@ -5,9 +5,9 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="cfbb528c-72ad-47ff-a60e-037b0e4a17c3" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/lora-mimo/gnu-radio/calc_sigma_delta_coefficients.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lora-mimo/gnu-radio/cic-filter-sim/cic_filter.ipynb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/chipathon-2026.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/chipathon-2026.iml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/lora-mimo/gnu-radio/SD_comparison.grc" beforeDir="false" afterPath="$PROJECT_DIR$/lora-mimo/gnu-radio/SD_comparison.grc" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -18,6 +18,7 @@
     <option name="RECENT_TEMPLATES">
       <list>
         <option value="Python Script" />
+        <option value="Jupyter Notebook" />
       </list>
     </option>
   </component>
@@ -33,29 +34,29 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ModuleVcsDetector.initialDetectionPerformed": "true",
-    "Python.calc_sigma_delta_coefficients.executor": "Run",
-    "Python.coeffs.executor": "Run",
-    "Python.compare_CIFF_modulators.executor": "Run",
-    "Python.convert_iq.executor": "Run",
-    "Python.fix_deltasigma_compat.executor": "Run",
-    "Python.sd_time_freq_sim.executor": "Run",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.git.unshallow": "true",
-    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
-    "codeWithMe.voiceChat.enabledByDefault": "false",
-    "git-widget-placeholder": "gnu-radio",
-    "last_opened_file_path": "/home/vendasky/Projects/chipathon-2026",
-    "node.js.detected.package.eslint": "true",
-    "node.js.detected.package.tslint": "true",
-    "node.js.selected.package.eslint": "(autodetect)",
-    "node.js.selected.package.tslint": "(autodetect)",
-    "nodejs_package_manager_path": "npm",
-    "settings.editor.selected.configurable": "preferences.lookFeel"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;Python.calc_sigma_delta_coefficients.executor&quot;: &quot;Run&quot;,
+    &quot;Python.coeffs.executor&quot;: &quot;Run&quot;,
+    &quot;Python.compare_CIFF_modulators.executor&quot;: &quot;Run&quot;,
+    &quot;Python.convert_iq.executor&quot;: &quot;Run&quot;,
+    &quot;Python.fix_deltasigma_compat.executor&quot;: &quot;Run&quot;,
+    &quot;Python.sd_time_freq_sim.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
+    &quot;codeWithMe.voiceChat.enabledByDefault&quot;: &quot;false&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;gnu-radio&quot;,
+    &quot;last_opened_file_path&quot;: &quot;/home/vendasky/Projects/chipathon-2026&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;preferences.lookFeel&quot;
   }
-}]]></component>
+}</component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
       <recent name="$PROJECT_DIR$/lora-mimo/gnu-radio" />
