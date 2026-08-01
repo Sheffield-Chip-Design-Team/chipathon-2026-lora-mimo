@@ -5,9 +5,8 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="cfbb528c-72ad-47ff-a60e-037b0e4a17c3" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/lora-mimo/gnu-radio/cic-filter-sim/cic_filter.ipynb" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/chipathon-2026.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/chipathon-2026.iml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/lora-mimo/gnu-radio/cic-filter-sim/cic_interpolation.ipynb" beforeDir="false" afterPath="$PROJECT_DIR$/lora-mimo/gnu-radio/cic-filter-sim/cic_interpolation.ipynb" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -196,7 +195,7 @@
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-python-sdk-c59985aa861c-c2ffad84badb-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-261.24374.152" />
+        <option value="bundled-python-sdk-50341a9f1f9c-c2ffad84badb-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-261.26222.68" />
       </set>
     </attachedChunks>
   </component>
