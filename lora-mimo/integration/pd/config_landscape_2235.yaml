@@ -1,0 +1,347 @@
+# Grouper<->Trouper landscape floorplan.
+# See planning/grouper-trouper-landscape-floorplan-2026-08.md for rationale and
+# open items before submitting this.
+#
+# Converted 2026-08-22 from an earlier OpenLane2-JSON-style skeleton (Trouper's
+# dialect) to LibreLane's native YAML format (Grouper's dialect) -- see
+# planning doc Open Item #6. Same underlying LibreLane config variables either
+# way (FP_OBSTRUCTIONS/IO_PIN_ORDER_CFG/PDN_CFG/MACROS are not tied to either
+# format); chosen so Grouper's SRAM macro placement (Open Item #5) can go
+# inline instead of needing a translated side-file.
+#
+# DESIGN_NAME/VERILOG_FILES/USE_SLANG/VERILOG_DEFINES below are carried over
+# from synth_only_chip_top.yaml (2026-08-22, job 4665: confirmed synthesizes
+# cleanly against gf180mcu_fd_sc_mcu7t5v0 -- 1,187,173 um^2, 43,699 cells).
+# That was a synth-only check (--to Yosys.Synthesis, no floorplan/PDN); this
+# file is the real floorplan config built on the same verified RTL/settings.
+
+meta:
+  version: 3
+  # Unfenced placement baseline; pin groups are assigned to their legal lobe.
+  flow: Classic
+
+# STATUS (not a real config key -- `_STATUS` was rejected by LibreLane's
+# schema validation, confirmed 2026-08-22, job 4675 -- unlike the informal
+# JSON-skeleton stage, YAML config keys are validated strictly):
+# Die/obstruction/pin-order geometry is settled and chip_top synthesizes
+# cleanly (job 4667, full grouper_soc_top+trouper_top+bridge rewrite).
+# io_placement_landscape.cfg has a temporary pin-side guard (real Trouper
+# pins on N/W, GRP_* bus + catch-all on S/E) so Grouper pins can't default
+# onto Trouper's side, but it is NOT a real pinout (Open Item #4, deferred).
+# Not yet run as a full floorplan/PnR flow -- only synthesis has been
+# verified so far, and PDN_CFG below is disabled (see its own note) until a
+# real pdn_cfg.tcl exists.
+
+DESIGN_NAME: chip_top
+VERILOG_FILES:
+- dir::../ip/grouper/hw/rtl/ahb3lite/ahb3lite_pkg.sv
+- dir::../ip/grouper/hw/rtl/common/clk_div.sv
+- dir::../ip/grouper/hw/rtl/common/clk_gate.sv
+- dir::../ip/grouper/hw/rtl/common/clk_out.sv
+- dir::../ip/grouper/hw/rtl/common/downcounter.sv
+- dir::../ip/grouper/hw/rtl/common/pulse_sync.sv
+- dir::../ip/grouper/hw/rtl/common/shift_reg.sv
+- dir::../ip/grouper/hw/rtl/common/small_sync_fifo.sv
+- dir::../ip/grouper/hw/rtl/common/sync.sv
+- dir::../../ip/picorv32/picorv32.v
+- dir::../ip/grouper/hw/rtl/gpio/gpio_ctrl_pkg.sv
+- dir::../ip/grouper/hw/rtl/gpio/ahb_gpio_ctrl.sv
+- dir::../ip/grouper/hw/rtl/spi_s/ahb_spi_s.sv
+- dir::../ip/grouper/hw/rtl/uart/uart_clk_div.sv
+- dir::../ip/grouper/hw/rtl/uart/uart_rx.sv
+- dir::../ip/grouper/hw/rtl/uart/uart_tx.sv
+- dir::../ip/grouper/hw/rtl/uart/uart.sv
+- dir::../ip/grouper/hw/rtl/uart/ahb_uart.sv
+- dir::../ip/grouper/hw/rtl/interconnect/ahb_debug.sv
+- dir::../ip/grouper/hw/rtl/interconnect/ahb_conn_buff.sv
+- dir::../ip/grouper/hw/rtl/interconnect/ahb_stub_slave.sv
+- dir::../ip/grouper/hw/rtl/ahb_interconnect_ss.sv
+- dir::../ip/grouper/hw/rtl/memory/ahb_rom.sv
+- dir::../ip/grouper/hw/rtl/memory/ahb_ram.sv
+- dir::../ip/grouper/hw/rtl/memory/ram_ss.sv
+- dir::../ip/grouper/hw/pd/wrappers/sram1024x8_wrapper.sv
+- dir::../ip/grouper/hw/rtl/io_ss.sv
+- dir::../ip/grouper/hw/rtl/cpu_ss.sv
+- dir::../ip/grouper/hw/rtl/periph_ss.sv
+- dir::../ip/grouper/hw/rtl/digital_ss.sv
+- dir::../ip/grouper/hw/rtl/grouper_soc_top.sv
+- dir::../rtl/ahb_to_grp_bridge.v
+- dir::../rtl/chip_top.v
+- dir::../ip/trouper/src/top/trouper_top.v
+- dir::../ip/trouper/src/decimator/sd_decimator_poly.v
+- dir::../ip/trouper/src/frontend/dc_removal.v
+- dir::../ip/trouper/src/frontend/sc_detector.v
+- dir::../ip/trouper/src/combiner/training_acc.v
+- dir::../ip/trouper/src/control/packet_ctrl_fsm.v
+- dir::../ip/trouper/src/control/psram_buf_ctrl.v
+- dir::../ip/trouper/src/combiner/mrc_combiner.v
+- dir::../ip/trouper/src/remod/sd_remod.v
+- dir::../ip/trouper/src/control/spi_slave.v
+- dir::../ip/trouper/src/control/reg_bank.v
+
+USE_SLANG: true
+
+# See synth_only_chip_top.yaml's header: without ROM_INIT_CONST, ahb_rom.sv
+# falls back to a sim-only `$readmemh`, which the slang synth frontend
+# rejects. This switches it to the ASIC-synthesis `` `include `` path.
+# MACRO_RAM switches ahb_ram.sv/ram_ss.sv to the real sram1024x8m8wm1 macro
+# path (via sram1024x8_wrapper) instead of a behavioural array -- needed for
+# the MACROS placement block below to apply to anything real. Unlike
+# synth_only_chip_top.yaml (which deliberately omits this to avoid needing
+# the macro's GDS/LEF for a fast synth-only check), this is the real
+# floorplan config, so it needs the real macro.
+VERILOG_DEFINES:
+- ROM_INIT_CONST
+- PROG_FILE_VMEM="code_grouper_trouper.vmem"
+- MACRO_RAM
+VERILOG_INCLUDE_DIRS:
+- dir::../fw
+
+# HCLK is tied to Trouper's IQ_CLK in chip_top.v (32 MHz) -- see that file's
+# shared-clock-domain assumption, not yet validated.
+# The combined chip has genuinely asynchronous 16 MHz (Grouper) and 32 MHz
+# (Trouper) external clocks. The SDC below creates both clocks and cuts timing
+# only through the explicit request/acknowledge CDC bridge.
+CLOCK_PORT: [HCLK, IQ_CLK]
+CLOCK_PERIOD: 31.25
+PNR_SDC_FILE: dir::chip_top_dual_clock.sdc
+SIGNOFF_SDC_FILE: dir::chip_top_dual_clock.sdc
+
+FP_SIZING: absolute
+DIE_AREA: [0, 0, 2235, 2235]
+
+# Baseline landscape geometry: a bottom-left 1117.5x1117.5 square and a
+# top-right 558.75x1117.5 rectangle.  These boxes block cell placement only;
+# matching PDN keepouts are set by the P&R runner.
+#
+# Obstruction B's left edge moved 1676.25 -> 1665 (job 5051 trial, Strategy A
+# for the DPL-0036/_71880_ failure -- see planning doc item 14/16): the row
+# at y~2097 (and every row spanning the SRAM macro column's height,
+# confirmed across dozens of rows in job 5044's routed DEF) has an
+# 18-site/~10 um sliver between the last macro's FP_MACRO_HORIZONTAL_HALO
+# and this edge -- a hard geometric capacity trap that padding tuning cannot
+# fix (see item 14: DPL_CELL_PADDING=1 then =2, plus an ordering-bug patch,
+# both failed identically). This swallows the sliver entirely so no cell can
+# ever be placed there again. Only removes placeable area (strict superset
+# of the prior obstruction) -- cannot introduce a new DRC/antenna risk.
+# Deliberately does NOT touch the runner's PDN_KEEPOUT_REGION_B -- PDN
+# routing in the reclaimed sliver is harmless, only cell placement needed to
+# avoid it.
+FP_OBSTRUCTIONS:
+- [0, 0, 1117.5, 1117.5]
+- [1665, 1117.5, 2235, 2235]
+
+IO_PIN_ORDER_CFG: dir::io_placement_landscape.cfg
+
+# Grouper's sram1024x8m8wm1 x4, landscape 2x2 -- rotated 90 degrees from
+# Grouper's own current default (`integration/ip/grouper/librelane/classic/
+# config.yaml`, DIE_AREA 1100x1500 portrait, the *actual* current 2x2 config --
+# note config_1330x1370_keepdlyc_fanout32.yaml in that same dir has a stale
+# "2x2" comment block left over a row-of-4 instances list; config.yaml is the
+# one that matches its own comments and is genuinely the current default).
+#
+# Reference (config.yaml) 2x2, unrotated (301.3 x 515.81 per macro,
+# orientation S): columns at x=319.76/679.28 (359.52 pitch = 301.3 macro +
+# 58.22 gap), rows at y=23.52/599.76 (576.24 pitch = 515.81 macro + 60.43
+# channel) -- bounding box 660.82 wide x 1092.05 tall. That gap/channel comes
+# from a PDN half-period lattice specific to THAT design's stripe pattern (see
+# its own comments) -- our combined chip_top has no PDN stripe config defined
+# yet, so reusing 58.22/60.43 below is a first-pass placeholder, NOT
+# re-derived for this design's own PDN grid. Needs revisiting once PDN_CFG
+# here has real stripe pitch/offset values.
+#
+# Baseline trial: a known-good 4x1 row (orientation S) in the upper-right of
+# the usable northwest lobe.  It stays west of Obstruction B while leaving
+# the lower NW lobe open for the central neck and Grouper ↔ Trouper routes.
+#
+# IMPORTANT, one open gap remains (the other -- chip_top not instantiating
+# Grouper's RAM -- is RESOLVED as of the 2026-08-22 rewrite to instantiate
+# grouper_soc_top directly; instance path below updated to match: chip_top.v
+# names it u_grouper, not u_grouper_soc_top):
+# integration/ip/grouper/ip/gf180mcu_ocd_ip_sram/ (Grouper's OWN nested
+# submodule for this macro family) is not initialized in this checkout --
+# confirmed empty 2026-08-22. The gds/lef/vh paths below are correct (match
+# Grouper's own config.yaml convention exactly), but need
+# `git submodule update --init` inside integration/ip/grouper before the
+# files actually exist on disk.
+MACROS:
+  gf180mcu_ocd_ip_sram__sram1024x8m8wm1:
+    gds:
+      - dir::../ip/grouper/ip/gf180mcu_ocd_ip_sram/cells/gf180mcu_ocd_ip_sram__sram1024x8m8wm1/gf180mcu_ocd_ip_sram__sram1024x8m8wm1.gds
+    lef:
+      - dir::../ip/grouper/ip/gf180mcu_ocd_ip_sram/cells/gf180mcu_ocd_ip_sram__sram1024x8m8wm1/gf180mcu_ocd_ip_sram__sram1024x8m8wm1.lef
+    vh:
+      - dir::../ip/grouper/ip/gf180mcu_ocd_ip_sram/cells/gf180mcu_ocd_ip_sram__sram1024x8m8wm1/gf180mcu_ocd_ip_sram__sram1024x8m8wm1__blackbox_pp.v
+    # Match the whole combined design's 3.3 V STA corners.  The 5v0 part of
+    # the standard-cell library name is its device flavour, not this rail.
+    lib:
+      "*_tt_025C_3v30":
+        - dir::../ip/grouper/ip/gf180mcu_ocd_ip_sram/cells/gf180mcu_ocd_ip_sram__sram1024x8m8wm1/gf180mcu_ocd_ip_sram__sram1024x8m8wm1__tt_025C_3v30.lib
+      "*_ss_125C_3v00":
+        - dir::../ip/grouper/ip/gf180mcu_ocd_ip_sram/cells/gf180mcu_ocd_ip_sram__sram1024x8m8wm1/gf180mcu_ocd_ip_sram__sram1024x8m8wm1__ss_125C_3v00.lib
+      "*_ff_n40C_3v60":
+        - dir::../ip/grouper/ip/gf180mcu_ocd_ip_sram/cells/gf180mcu_ocd_ip_sram__sram1024x8m8wm1/gf180mcu_ocd_ip_sram__sram1024x8m8wm1__ff_n40C_3v60.lib
+    instances:
+      "u_grouper.u_grouper_soc_dig_ss.u_periph_ss.u_ram.u_ram_ss.gen_macro_ram.gen_sram[0].u_wrapper.u_sram_macro":
+        location: [388.65, 1695.67]
+        orientation: S
+      "u_grouper.u_grouper_soc_dig_ss.u_periph_ss.u_ram.u_ram_ss.gen_macro_ram.gen_sram[1].u_wrapper.u_sram_macro":
+        location: [709.95, 1695.67]
+        orientation: S
+      "u_grouper.u_grouper_soc_dig_ss.u_periph_ss.u_ram.u_ram_ss.gen_macro_ram.gen_sram[2].u_wrapper.u_sram_macro":
+        location: [1031.25, 1695.67]
+        orientation: S
+      "u_grouper.u_grouper_soc_dig_ss.u_periph_ss.u_ram.u_ram_ss.gen_macro_ram.gen_sram[3].u_wrapper.u_sram_macro":
+        location: [1352.55, 1695.67]
+        orientation: S
+
+# ---------------------------------------------------------------------------
+# PDN -- pdn_cfg.tcl is now a real file (2026-08-22), copied from Grouper's
+# own librelane/classic/pdn_cfg.tcl (battle-tested against these exact SRAM
+# macros) plus Trouper's PDN_KEEPOUT_REGION guard appended for this die's
+# Obstruction A/B. See that file's own header for what's safely reused
+# as-is (layer choices, via-bridging structure, macro grid definition) vs.
+# what's still a placeholder pending re-derivation (the strap pitch/offset
+# numbers below, which were derived for the OLD portrait/orientation-S SRAM
+# layout, not this design's rotated landscape one).
+#
+# VDD_NETS/GND_NETS, PDN_MULTILAYER/ENABLE_RAILS/RAIL_LAYER/VERTICAL_LAYER/
+# HORIZONTAL_LAYER/ENABLE_PINS/CORE_RING/*_HALO, PDN_MACRO_CONNECTIONS, and
+# FP_MACRO_*_HALO are layer/topology choices tied to the PDK and std-cell
+# library, not to macro position -- copied verbatim from Grouper's
+# config.yaml, should be safe.
+VDD_NETS: [VDD]
+GND_NETS: [VSS]
+
+# Provisional physical VDD/VSS-source model for IR analysis.  The core-only
+# integration has no pad instances, so selected project downbonds are modelled
+# as explicit voltage sources.  Three failed snap attempts (bad estimate,
+# then a units-divisor bug, then a bare stripe-edge point with no via) are
+# recorded in vsrc/*.loc's own history comments -- short version: OpenROAD's
+# `analyze_power_grid -vsrc` needs a point that is actually via-connected
+# down through the stack, not just anywhere on a Metal5 stripe. Re-derived
+# 2026-08-23 from real via4_5 (Metal4-Metal5) locations in the routed DEF,
+# confirmed present in both the leanm3 (job 4799) and reversed
+# local-sram-bridge (job 4803) PDN topologies: VDD at (2180.06,388.25)
+# (Trouper east); VSS at (82.86,1288.25) (Grouper west) and
+# (2120.14,928.25) (Trouper east). Confirmed end-to-end by jobs 4833/4834's
+# successful IRDropReport runs.
+#
+# 2026-08-24: added a second VDD source at (140.30,1466.70) (Grouper west,
+# via4_5 location from job 4834's own routed DEF) -- VDD only ever had the
+# one Trouper-side source while VSS had two, an unintentional asymmetry that
+# job 4834's per-node net-VDD.csv shows was a real driver of the worst-case
+# number (smooth ~2.8mm distance gradient from the single source to the far
+# corner, not a last-mile/pin-access effect). Not yet confirmed against a
+# fresh IRDropReport run. See vsrc/*.loc for the full derivation notes.
+# Still must be replaced with real padframe data before physical sign-off --
+# see planning/grouper-trouper-landscape-floorplan-2026-08.md Open Item #9.
+VSRC_LOC_FILES:
+  VDD: dir::vsrc/vdd_estimated_project_downbonds.loc
+  VSS: dir::vsrc/vss_estimated_project_downbonds.loc
+
+PDN_MULTILAYER:       true
+PDN_ENABLE_RAILS:     true
+PDN_RAIL_LAYER:       Metal1
+PDN_VERTICAL_LAYER:   Metal4
+PDN_HORIZONTAL_LAYER: Metal5
+PDN_ENABLE_PINS:      true
+PDN_CORE_RING:        false
+PDN_HORIZONTAL_HALO:  10
+PDN_VERTICAL_HALO:    10
+PDN_EXTEND_TO:        boundary
+
+# Keep standard/CTS cells away from the SRAM lower-metal obstruction.  This
+# matches Trouper's proven 12 um macro-placement margin; the PDN halo above
+# deliberately remains 10 um and is not changed by this routing-access fix.
+FP_MACRO_HORIZONTAL_HALO: 12
+FP_MACRO_VERTICAL_HALO:   12
+
+PDN_MACRO_CONNECTIONS:
+- ".*u_sram_macro VDD VSS VDD VSS"
+
+# TBD -- copied from Grouper's reference as placeholders, NOT re-derived for
+# this design's rotated (orientation E) landscape macro layout. Grouper's own
+# derivation (see pdn_cfg.tcl and its config.yaml's own comments) depends on
+# exactly which macro edges expose the Metal3 VDD/VSS frame, which changes
+# under a 90-degree rotation. Using these numbers as-is risks the same
+# silent-rail-float failure mode Grouper's own comments describe for a
+# mismatched pitch -- treat any run against this file as unverified for SRAM
+# power specifically until this is redone.
+PDN_VWIDTH:    5.04
+PDN_HWIDTH:    5.4
+PDN_VPITCH:    119.84
+PDN_HPITCH:    360
+PDN_VSPACING:  54.88
+PDN_HSPACING:  174.6
+PDN_VOFFSET:   14.98
+PDN_HOFFSET:   13.5
+
+PDN_CFG: dir::pdn_cfg.tcl
+
+# ---------------------------------------------------------------------------
+# 3.3 V STA setup
+# ---------------------------------------------------------------------------
+# `gf180mcu_fd_sc_mcu7t5v0` is characterized at these 3.3 V corners; the
+# SRAM is also a 3.3 V macro and has matching Liberty files above.
+DEFAULT_CORNER: nom_tt_025C_3v30
+STA_CORNERS:
+  - nom_tt_025C_3v30
+  - min_ff_n40C_3v60
+  - max_ss_125C_3v00
+
+# Floorplan/routing exploration follows Trouper's established policy: retain
+# STA reports for every corner, but do not abort P&R solely on open timing.
+# Remove this only for a timing-signoff run.
+TIMING_VIOLATION_CORNERS: []
+
+# Detailed-placement legalization padding. Was unset (=0, no slack) through
+# job 5040/5041: both failed identically at DPL-0036 (detailed placement
+# failed on instance _71880_, a nand4_1 sitting ~6 um outside Obstruction B's
+# edge) inside OpenROAD.RepairDesignPostGRT, deterministic across two
+# separate runs (same iteration 13000/37108-remaining, same wirelength, same
+# instance). At ~67% placement density concentrated against the obstruction
+# edges (only 62.5% of core-bbox sites are placeable after the two
+# FP_OBSTRUCTIONS cuts -- see grouper-trouper-landscape-floorplan-2026-08.md),
+# zero padding leaves the legalizer no slack sites to shuffle into when the
+# post-GRT resizer needs to insert/resize a cell near a hard boundary.
+# ip/trouper/rtl-test/ol_trouper_top/config_current_signoff.json (the config
+# paired with the exact pnr_32m_scoped_v25_b6.sdc this file's MCP exceptions
+# were ported from) runs DPL_CELL_PADDING=1 successfully at PL_TARGET_DENSITY_PCT
+# 88 -- a much tighter floorplan than this one's ~67%. Matching that value
+# here (not trouper's more aggressive 2-4, used only in its harder
+# tight-floorplan trials) should give ample legalization slack.
+#
+# UPDATE (job 5042): DPL_CELL_PADDING=1 was a complete no-op -- byte-identical
+# DPL-0036/_71880_ failure to jobs 5040/5041 (padding=0). Two real bugs found
+# and fixed via integration/scripts/patch_dpl_padding_postgrt.sh (see its own
+# header): (1) DPL_CELL_PADDING is only applied in dpl.tcl, sourced AFTER
+# repair_design_postgrt.tcl's own `repair_design` call -- but that call does
+# its own internal legalization, which is what's actually failing, before
+# padding is ever set; (2) common/dpl_cell_pad.tcl computes
+# `cell_pad_side = DPL_CELL_PADDING / 2` via Tcl integer division, so 1
+# truncates to 0 effective padding regardless. Bumped to 2 (-> 1 site/side)
+# now that the ordering patch makes the value actually matter.
+DPL_CELL_PADDING: 2
+
+# Trouper's proven IO/clock-tree setting.  The default `half` creates an NDR
+# clock subtree that has repeatedly caused DRT-0073 access failures here.
+CTS_APPLY_NDR: none
+
+# Timing-focused synthesis trial.  Kept separate from floorplan experiments;
+# compare this result with the AREA 0 baseline after confirming routability.
+SYNTH_STRATEGY: DELAY 0
+
+# Permit the normal mixed antenna repair: use jumpers first, then legalizable
+# antenna diode cells for violations that a jumper cannot fix.  Job 4770
+# proved jumper-only leaves 39 violations and stops the flow before DRT.
+GRT_ANTENNA_REPAIR_JUMPER_ONLY: false
+DRT_ANTENNA_REPAIR_JUMPER_ONLY: false
+
+LIB:
+  "*_tt_025C_3v30":
+    - /foss/pdks/gf180mcuD/libs.ref/gf180mcu_fd_sc_mcu7t5v0/lib/gf180mcu_fd_sc_mcu7t5v0__tt_025C_3v30.lib
+  "*_ff_n40C_3v60":
+    - /foss/pdks/gf180mcuD/libs.ref/gf180mcu_fd_sc_mcu7t5v0/lib/gf180mcu_fd_sc_mcu7t5v0__ff_n40C_3v60.lib
+  "*_ss_125C_3v00":
+    - /foss/pdks/gf180mcuD/libs.ref/gf180mcu_fd_sc_mcu7t5v0/lib/gf180mcu_fd_sc_mcu7t5v0__ss_125C_3v00.lib

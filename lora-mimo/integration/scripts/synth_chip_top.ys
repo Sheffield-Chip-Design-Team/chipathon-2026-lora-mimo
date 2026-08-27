@@ -1,0 +1,42 @@
+# synth_chip_top.ys -- trial synthesis of the combined Grouper<->Trouper chip_top.
+# GF180MCU mcu7t5v0 TT 3.3V 25C, matching both projects' own PD configs.
+#
+# NOT a full LibreLane/floorplan run -- just Yosys synth + tech map + stat, to
+# catch synthesis-level issues (latch inference, width mismatches, unmapped
+# cells) beyond what iverilog elaboration (check_chip_top.sh) already covers.
+# See planning/grouper-trouper-landscape-floorplan-2026-08.md Open Item #1.
+
+# ---- Read RTL -----------------------------------------------------------
+read_verilog -sv ip/grouper/hw/rtl/ahb3lite/ahb3lite_pkg.sv
+read_verilog -sv ip/grouper/hw/rtl/memory/ahb_rom.sv
+read_verilog    ../ip/picorv32/picorv32.v
+read_verilog -sv rtl/cpu_ss_emc.sv
+read_verilog    rtl/ahb_to_grp_bridge.v
+read_verilog    rtl/chip_top.v
+read_verilog    ip/trouper/src/top/trouper_top.v
+read_verilog    ip/trouper/src/decimator/sd_decimator_poly.v
+read_verilog    ip/trouper/src/frontend/dc_removal.v
+read_verilog    ip/trouper/src/frontend/sc_detector.v
+read_verilog    ip/trouper/src/combiner/training_acc.v
+read_verilog    ip/trouper/src/control/packet_ctrl_fsm.v
+read_verilog    ip/trouper/src/control/psram_buf_ctrl.v
+read_verilog    ip/trouper/src/combiner/mrc_combiner.v
+read_verilog    ip/trouper/src/remod/sd_remod.v
+read_verilog    ip/trouper/src/control/spi_slave.v
+read_verilog    ip/trouper/src/control/reg_bank.v
+
+# ---- Elaborate ------------------------------------------------------------
+hierarchy -check -top chip_top
+
+# ---- Synthesise -----------------------------------------------------------
+synth -top chip_top
+
+# ---- Technology mapping -----------------------------------------------------
+dfflibmap -liberty /foss/pdks/gf180mcuD/libs.ref/gf180mcu_fd_sc_mcu7t5v0/lib/gf180mcu_fd_sc_mcu7t5v0__tt_025C_3v30.lib
+abc -liberty /foss/pdks/gf180mcuD/libs.ref/gf180mcu_fd_sc_mcu7t5v0/lib/gf180mcu_fd_sc_mcu7t5v0__tt_025C_3v30.lib
+
+# ---- Clean-up and report ----------------------------------------------------
+opt_clean -purge
+
+tee -o @@OUT@@/stat_chip_top.txt stat -liberty /foss/pdks/gf180mcuD/libs.ref/gf180mcu_fd_sc_mcu7t5v0/lib/gf180mcu_fd_sc_mcu7t5v0__tt_025C_3v30.lib
+write_verilog -noattr @@OUT@@/netlist_chip_top.v

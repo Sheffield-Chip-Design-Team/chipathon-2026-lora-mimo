@@ -1,0 +1,97 @@
+# Synthesis-only check for the combined Grouper<->Trouper chip_top -- NOT a
+# hardening config: no floorplan, no PDN, never taped out. Modeled on Grouper's
+# own librelane/measure/*.yaml pattern (see that dir's README.md), which exists
+# for exactly this purpose (`--to Yosys.Synthesis`).
+#
+# Why this exists instead of a plain `yosys -s` run: plain yosys's built-in SV
+# frontend chokes on Grouper's own ahb3lite_pkg.sv (a `return` statement inside
+# an SV function -- confirmed 2026-08-22, job 4663). Grouper's own working PD
+# configs set USE_SLANG: true, which swaps in the slang frontend LibreLane
+# bundles -- that's the difference, not anything about chip_top.v itself. See
+# planning/grouper-trouper-landscape-floorplan-2026-08.md Open Item #1.
+#
+# Run with: librelane synth_only_chip_top.yaml --to Yosys.Synthesis
+#   --pdk gf180mcuD --pdk-root /foss/pdks --manual-pdk --run-tag chip_top_synth
+#
+# 2026-08-22, rewritten: chip_top.v now instantiates Grouper's real
+# grouper_soc_top (the whole SoC -- CPU, ROM, RAM, UART, GPIO, periph_ss) as
+# a single top-level module instead of hand-picking submodules and
+# reimplementing their interconnect. VERILOG_FILES below is Grouper's own
+# full file list from librelane/classic/config.yaml (the authoritative
+# source), minus its grouper_soc_chip_core padframe wrapper (chip_top.v
+# instantiates grouper_soc_top directly, one level in from that). This
+# needed a small local patch to grouper_soc_top.sv itself -- see that file's
+# header -- to expose its "External AHB Master Interface" instead of tying
+# it off dead; that's the port chip_top.v bridges to Trouper on.
+# MACRO_RAM is deliberately NOT set here (unlike config_landscape_2235.yaml),
+# so ram_ss falls back to its behavioural array path instead of needing the
+# real SRAM macro's GDS/LEF for this fast synth-only check.
+
+DESIGN_NAME: chip_top
+
+VERILOG_FILES:
+- dir::../ip/grouper/hw/rtl/ahb3lite/ahb3lite_pkg.sv
+- dir::../ip/grouper/hw/rtl/common/clk_div.sv
+- dir::../ip/grouper/hw/rtl/common/clk_gate.sv
+- dir::../ip/grouper/hw/rtl/common/clk_out.sv
+- dir::../ip/grouper/hw/rtl/common/downcounter.sv
+- dir::../ip/grouper/hw/rtl/common/pulse_sync.sv
+- dir::../ip/grouper/hw/rtl/common/shift_reg.sv
+- dir::../ip/grouper/hw/rtl/common/small_sync_fifo.sv
+- dir::../ip/grouper/hw/rtl/common/sync.sv
+- dir::../../ip/picorv32/picorv32.v
+- dir::../ip/grouper/hw/rtl/gpio/gpio_ctrl_pkg.sv
+- dir::../ip/grouper/hw/rtl/gpio/ahb_gpio_ctrl.sv
+- dir::../ip/grouper/hw/rtl/spi_s/ahb_spi_s.sv
+- dir::../ip/grouper/hw/rtl/uart/uart_clk_div.sv
+- dir::../ip/grouper/hw/rtl/uart/uart_rx.sv
+- dir::../ip/grouper/hw/rtl/uart/uart_tx.sv
+- dir::../ip/grouper/hw/rtl/uart/uart.sv
+- dir::../ip/grouper/hw/rtl/uart/ahb_uart.sv
+- dir::../ip/grouper/hw/rtl/interconnect/ahb_debug.sv
+- dir::../ip/grouper/hw/rtl/interconnect/ahb_conn_buff.sv
+- dir::../ip/grouper/hw/rtl/interconnect/ahb_stub_slave.sv
+- dir::../ip/grouper/hw/rtl/ahb_interconnect_ss.sv
+- dir::../ip/grouper/hw/rtl/memory/ahb_rom.sv
+- dir::../ip/grouper/hw/rtl/memory/ahb_ram.sv
+- dir::../ip/grouper/hw/rtl/memory/ram_ss.sv
+- dir::../ip/grouper/hw/rtl/io_ss.sv
+- dir::../ip/grouper/hw/rtl/cpu_ss.sv
+- dir::../ip/grouper/hw/rtl/periph_ss.sv
+- dir::../ip/grouper/hw/rtl/digital_ss.sv
+- dir::../ip/grouper/hw/rtl/grouper_soc_top.sv
+- dir::../rtl/ahb_to_grp_bridge.v
+- dir::../rtl/chip_top.v
+- dir::../ip/trouper/src/top/trouper_top.v
+- dir::../ip/trouper/src/decimator/sd_decimator_poly.v
+- dir::../ip/trouper/src/frontend/dc_removal.v
+- dir::../ip/trouper/src/frontend/sc_detector.v
+- dir::../ip/trouper/src/combiner/training_acc.v
+- dir::../ip/trouper/src/control/packet_ctrl_fsm.v
+- dir::../ip/trouper/src/control/psram_buf_ctrl.v
+- dir::../ip/trouper/src/combiner/mrc_combiner.v
+- dir::../ip/trouper/src/remod/sd_remod.v
+- dir::../ip/trouper/src/control/spi_slave.v
+- dir::../ip/trouper/src/control/reg_bank.v
+
+USE_SLANG: true
+
+# Without ROM_INIT_CONST, ahb_rom.sv falls back to a sim-only `$readmemh`, which
+# the slang synth frontend rejects as an unsupported system task (confirmed
+# 2026-08-22, job 4664). ROM_INIT_CONST switches it to the ASIC-synthesis path
+# (`` `include `PROG_FILE_VMEM ``), matching Grouper's own config.yaml convention.
+# Reuses the same firmware image the original AHB integration testbench used.
+# Deliberately NOT using DRY_RUN (Grouper's own 64B-boot-ROM/stubbed-SPI-slave
+# variant) -- this is meant to be the real design, not the cut-down PD trial.
+VERILOG_DEFINES:
+- ROM_INIT_CONST
+- PROG_FILE_VMEM="code_grouper_trouper.vmem"
+VERILOG_INCLUDE_DIRS:
+- dir::../fw
+
+# HCLK is tied to Trouper's IQ_CLK in chip_top.v (32 MHz) -- see that file's
+# shared-clock-domain assumption, not yet validated.
+CLOCK_PORT: HCLK
+CLOCK_PERIOD: 31.25
+SYNTH_STRATEGY: "AREA 0"
+MAX_FANOUT_CONSTRAINT: 16

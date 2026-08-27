@@ -1,0 +1,103 @@
+// code_fpga_gt.vmem
+// Hand-assembled RV32E(MC)-compatible program for the FPGA bring-up of the Grouper<->Trouper
+// AHB integration (fpga_top.v). Loaded into Grouper's ahb_rom.sv via `include `PROG_FILE_VMEM
+// for simulation (see ../scripts/run.sh); code_fpga_gt.hex is the $readmemh twin used when
+// `FPGA is defined (Vivado build, see ../vivado/create_project.tcl).
+//
+// Only uses x1-x10 (within RV32E's 16-register x0-x15 limit) and plain 32-bit encodings
+// (COMPRESSED_ISA=1 only permits 16-bit opcodes, doesn't require them) -- same convention as
+// ../../fw/code_grouper_trouper.vmem. Assembled with a throwaway two-pass RV32I encoder
+// (not committed) whose lui/addi/sb output was cross-checked byte-for-byte against that known-
+// good reference file before use.
+//
+// Register conventions:
+//   x1  = Trouper AHB window base (0x0001_0000)
+//   x2  = ahb_gpio_dbg base (0x0002_0000): +0x00 SPI_CTRL {MOSI,SCK,CS_n,-,MISO}, +0x04 STATUS
+//   x6  = MIMO_CTRL test value (0xF1) -- matches the value already proven safe to write in
+//         Trouper's own tb_trouper_grp_arb.v (antenna_en=1111, mimo_mode=01)
+//   x7  = SPI readback accumulator
+//   x8  = SPI command byte shift register ({read=1, addr[6:0]} = 0x88 for MIMO_CTRL)
+//
+// Program flow:
+//   1. AHB write: mem[0x10008] = 0xF1  (Trouper MIMO_CTRL over the real AHB3-Lite link)
+//   2. Idle the bit-banged SPI lines, settle delay
+//   3. One throwaway priming SPI read of MIMO_CTRL, discarded -- works around the same
+//      spi_slave.v first-transaction-reads-garbage quirk documented/worked around in
+//      tb_grouper_trouper_top.v (a Trouper-side quirk, not introduced by this bring-up)
+//   4. Real independent SPI readback of MIMO_CTRL (same register, same bus, but via Trouper's
+//      SPI slave port rather than the AHB path -- an oracle that can't be fooled by an AHB bug)
+//   5. Compare to 0xF1; latch DONE|PASS (0x3) or DONE|FAIL (0x5) into ahb_gpio_dbg's STATUS
+//      register, which drives led_status directly
+//   6. Halt in a self-loop (testbench/ILA capture just samples led/status after the fact)
+assign memory[ 'h00 ] = 32'h000100b7;
+assign memory[ 'h01 ] = 32'h00020137;
+assign memory[ 'h02 ] = 32'h0f100313;
+assign memory[ 'h03 ] = 32'h00608423;
+assign memory[ 'h04 ] = 32'h00100193;
+assign memory[ 'h05 ] = 32'h00310023;
+assign memory[ 'h06 ] = 32'h01000213;
+assign memory[ 'h07 ] = 32'hfff20213;
+assign memory[ 'h08 ] = 32'hfe021ee3;
+assign memory[ 'h09 ] = 32'h00000193;
+assign memory[ 'h0a ] = 32'h00310023;
+assign memory[ 'h0b ] = 32'h08800413;
+assign memory[ 'h0c ] = 32'h00800293;
+assign memory[ 'h0d ] = 32'h00745493;
+assign memory[ 'h0e ] = 32'h0014f493;
+assign memory[ 'h0f ] = 32'h00249493;
+assign memory[ 'h10 ] = 32'h00910023;
+assign memory[ 'h11 ] = 32'h0024e513;
+assign memory[ 'h12 ] = 32'h00a10023;
+assign memory[ 'h13 ] = 32'h00910023;
+assign memory[ 'h14 ] = 32'h00141413;
+assign memory[ 'h15 ] = 32'hfff28293;
+assign memory[ 'h16 ] = 32'hfc029ee3;
+assign memory[ 'h17 ] = 32'h00800293;
+assign memory[ 'h18 ] = 32'h00010023;
+assign memory[ 'h19 ] = 32'h00200493;
+assign memory[ 'h1a ] = 32'h00910023;
+assign memory[ 'h1b ] = 32'h00010023;
+assign memory[ 'h1c ] = 32'hfff28293;
+assign memory[ 'h1d ] = 32'hfe0296e3;
+assign memory[ 'h1e ] = 32'h00100193;
+assign memory[ 'h1f ] = 32'h00310023;
+assign memory[ 'h20 ] = 32'h01000213;
+assign memory[ 'h21 ] = 32'hfff20213;
+assign memory[ 'h22 ] = 32'hfe021ee3;
+assign memory[ 'h23 ] = 32'h00000193;
+assign memory[ 'h24 ] = 32'h00310023;
+assign memory[ 'h25 ] = 32'h08800413;
+assign memory[ 'h26 ] = 32'h00800293;
+assign memory[ 'h27 ] = 32'h00745493;
+assign memory[ 'h28 ] = 32'h0014f493;
+assign memory[ 'h29 ] = 32'h00249493;
+assign memory[ 'h2a ] = 32'h00910023;
+assign memory[ 'h2b ] = 32'h0024e513;
+assign memory[ 'h2c ] = 32'h00a10023;
+assign memory[ 'h2d ] = 32'h00910023;
+assign memory[ 'h2e ] = 32'h00141413;
+assign memory[ 'h2f ] = 32'hfff28293;
+assign memory[ 'h30 ] = 32'hfc029ee3;
+assign memory[ 'h31 ] = 32'h00000393;
+assign memory[ 'h32 ] = 32'h00800293;
+assign memory[ 'h33 ] = 32'h00010023;
+assign memory[ 'h34 ] = 32'h00200493;
+assign memory[ 'h35 ] = 32'h00910023;
+assign memory[ 'h36 ] = 32'h00010503;
+assign memory[ 'h37 ] = 32'h00455513;
+assign memory[ 'h38 ] = 32'h00157513;
+assign memory[ 'h39 ] = 32'h00139393;
+assign memory[ 'h3a ] = 32'h00a3e3b3;
+assign memory[ 'h3b ] = 32'h00010023;
+assign memory[ 'h3c ] = 32'hfff28293;
+assign memory[ 'h3d ] = 32'hfc029ce3;
+assign memory[ 'h3e ] = 32'h00100193;
+assign memory[ 'h3f ] = 32'h00310023;
+assign memory[ 'h40 ] = 32'h0f100493;
+assign memory[ 'h41 ] = 32'h00938863;
+assign memory[ 'h42 ] = 32'h00500513;
+assign memory[ 'h43 ] = 32'h00a10223;
+assign memory[ 'h44 ] = 32'h00c0006f;
+assign memory[ 'h45 ] = 32'h00300513;
+assign memory[ 'h46 ] = 32'h00a10223;
+assign memory[ 'h47 ] = 32'h0000006f;

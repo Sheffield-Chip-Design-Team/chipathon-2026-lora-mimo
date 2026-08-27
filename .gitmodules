@@ -20,3 +20,11 @@
 [submodule "lora-mimo/ip/gf180mcu_as_sc_mcu7t3v3"]
 	path = lora-mimo/ip/gf180mcu_as_sc_mcu7t3v3
 	url = https://github.com/AvalonSemiconductors/gf180mcu_as_sc_mcu7t3v3.git
+[submodule "lora-mimo/integration/ip/grouper"]
+	path = lora-mimo/integration/ip/grouper
+	url = https://github.com/Sheffield-Chip-Design-Team/chipathon-2026-grouper.git
+	branch = timn/pd-landscape-floorplan
+[submodule "lora-mimo/integration/ip/trouper"]
+	path = lora-mimo/integration/ip/trouper
+	url = https://github.com/Sheffield-Chip-Design-Team/chipathon-2026-trouper.git
+	branch = main
