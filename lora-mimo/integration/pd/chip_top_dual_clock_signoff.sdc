@@ -39,30 +39,20 @@ set_clock_uncertainty 0.5 [get_clocks HCLK25]
 set_clock_uncertainty 0.5 [get_clocks IQ_CLK32]
 
 # =============================================================================
-# ahb_to_grp_bridge CDC payload bounds (F2, branch timn/ahb-bridge-cdc-review)
+# ahb_to_grp_bridge CDC payload (F2, branch timn/ahb-bridge-cdc-review)
 #
-# set_clock_groups -asynchronous above already makes every HCLK25 <-> IQ_CLK32
-# path false. The bundled-data CDC inside u_bridge is safe under that cut ONLY
-# if the request / response payload nets settle at their capture flop within
-# about one destination-clock period of the synchronized request / ack toggle
-# -- the 2-flop synchronizers on request_toggle / acknowledge_toggle give
-# ~1-2 destination periods of slack and nothing else bounds the payload. Bound
-# just those payload nets with -datapath_only, which checks net delay without
-# reintroducing the (meaningless) launch/capture clock relationship. The bound
-# is one full destination period -- conservative, meant to catch a gross
-# routing blow-up, not to tighten a real path.
-#
-#   request_addr / request_wdata / request_write : launched by HCLK25,
-#       captured in the IQ_CLK32 domain  -> bound to the IQ_CLK32 period (31.25).
-#   response_rdata : launched by IQ_CLK32, captured in the HCLK25 domain
-#       -> bound to the HCLK25 period (40.0). Keep this second value equal to
-#       the HCLK period if it is retargeted again.
+# set_clock_groups -asynchronous above makes every HCLK25 <-> IQ_CLK32 path
+# false, which is the real CDC cut. The bundled-data scheme in u_bridge also
+# needs the request / response payload nets (u_bridge.request_addr/wdata/write,
+# u_bridge.response_rdata) to settle at their capture flop within ~1 dst-clock
+# period of the synchronized toggle. That bound was going to be added here as
+# `set_max_delay -datapath_only`, but this OpenROAD/OpenSTA build rejects the
+# `-datapath_only` flag ("not a known keyword or flag", job 5136), and a plain
+# set_max_delay across the async clock groups is meaningless. So the payload
+# bound is NOT enforced in STA -- see integration/planning/Open Risks.md #8.
+# The nets are short point-to-point connections inside one module, so this is
+# a check-with-a-CDC-tool item, not a live routing risk.
 # =============================================================================
-set brg_req_payload  [get_nets -hierarchical \
-    {u_bridge.request_addr[*] u_bridge.request_wdata[*] u_bridge.request_write}]
-set brg_resp_payload [get_nets -hierarchical {u_bridge.response_rdata[*]}]
-set_max_delay -datapath_only 31.25 -through $brg_req_payload
-set_max_delay -datapath_only 40.0  -through $brg_resp_payload
 
 # =============================================================================
 # Trouper IQ_CLK32-domain multicycle exceptions, ported from Trouper's own

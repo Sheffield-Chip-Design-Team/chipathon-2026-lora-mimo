@@ -281,3 +281,30 @@ the header comment (F6) making the single-beat-MMIO assumption explicit.
 Revisit only if anything ever puts a bursting master on this port.
 **See:** `integration/rtl/ahb_to_grp_bridge.v` (F6 note; `ahb_transfer`).
 **Found:** 2026-08-28 (CDC review, branch `timn/ahb-bridge-cdc-review`).
+
+### 8. `ahb_to_grp_bridge` CDC payload delay is not bounded in STA — `-datapath_only` unsupported
+
+The bundled-data CDC in `ahb_to_grp_bridge` is functionally safe on the
+request/ack toggle handshake plus the `set_clock_groups -asynchronous` cut in
+`chip_top_dual_clock.sdc`. It additionally *assumes* the payload nets
+(`u_bridge.request_addr/wdata/write`, `u_bridge.response_rdata`) settle at
+their capture flop within ~1 destination-clock period of the synchronized
+toggle. The intended enforcement — `set_max_delay -datapath_only` on just
+those nets — **is not accepted by this OpenROAD/OpenSTA build**: it errors
+`set_max_delay -datapath_only is not a known keyword or flag` (P&R job 5136,
+2026-08-28), and a plain `set_max_delay` across the async clock groups is
+meaningless. The F2 constraint was therefore removed from both SDC files.
+
+**Risk:** low in practice — the payload nets are short point-to-point
+connections inside one module and P&R will not stretch them to a full clock
+period. But nothing in the flow *proves* it.
+
+**Action.** Enforce the payload bound with a CDC linter (the intended tool
+for this class of check anyway), or add a post-route `report_checks -through`
+sanity check on those nets outside the async-group exception. Re-add
+`set_max_delay -datapath_only` to the SDC if/when the OpenSTA build gains the
+flag.
+**See:** `integration/rtl/ahb_to_grp_bridge.v` (F2 note);
+`integration/pd/chip_top_dual_clock.sdc` (the removed-constraint comment);
+P&R job 5136 log.
+**Found:** 2026-08-28 (first full P&R of the CDC-hardening branch).

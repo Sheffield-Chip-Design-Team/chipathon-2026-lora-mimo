@@ -29,11 +29,15 @@
 //       (* ASYNC_REG *): ASYNC_REG is a Vivado attribute, ignored by the
 //       Yosys / OpenROAD flow used here, so `keep` is what actually stops the
 //       flop pair from being merged or retimed. The async clock-group cut is
-//       in chip_top_dual_clock.sdc; the payload nets are additionally bounded
-//       there with `set_max_delay -datapath_only` (F2).
+//       in chip_top_dual_clock.sdc.
+//   F2  A `set_max_delay -datapath_only` bound on the request / response
+//       payload nets was intended but this OpenSTA build rejects the
+//       `-datapath_only` flag (job 5136), so the payload-settling requirement
+//       is NOT enforced in STA -- Open Risks #8. Functionally the crossing is
+//       safe on the toggle handshake + clock-group cut alone.
 //
 // Known limitations, NOT addressed here -- see
-// integration/planning/Open Risks.md items 5/6/7:
+// integration/planning/Open Risks.md items 5/6/7/8:
 //   F4  Read data is captured on a fixed HOLD_CYCLES delay, not qualified by
 //       GRP_READY (which is deliberately ignored, see below). Correct only
 //       while HOLD_CYCLES (default 6) >= Trouper's worst-case GRP read latency
@@ -116,7 +120,8 @@ module ahb_to_grp_bridge #(
     // Two-flop synchronizers. ASYNC_REG is Vivado-only (ignored by Yosys /
     // OpenROAD); `keep` is what actually prevents this flow from merging or
     // retiming the flop pair. See chip_top_dual_clock.sdc for the async
-    // clock-group cut and the -datapath_only payload bound (F2/F3).
+    // clock-group cut (F3). Payload delay bound (F2) is not enforceable in
+    // this OpenSTA -- see the header and Open Risks #8.
     (* ASYNC_REG = "TRUE", keep = "true" *) reg acknowledge_sync_1, acknowledge_sync_2;
     (* ASYNC_REG = "TRUE", keep = "true" *) reg request_sync_1, request_sync_2;
 
