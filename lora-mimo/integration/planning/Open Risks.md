@@ -135,6 +135,13 @@ they were only fused here for convenience.
   the other runs; the req/ack handshake FSM must then have each half reset
   by its own domain's reset (`HCLK` side ← Grouper reset, `IQ_CLK` side ←
   Trouper reset) or it can deadlock / glitch on an asymmetric reset event.
+  **Update (2026-08-28, F1, branch `timn/ahb-bridge-cdc-review`):** the
+  bridge now has per-domain reset synchronizers (`hrst_n_sync` on `HCLK`,
+  `iqrst_n_sync` on `IQ_CLK`; async assert / sync deassert). Both still take
+  the single `HRESETn` today, but the split point for (b) is now one line
+  each — feed `iqrst_n_*` from Trouper's reset and `hrst_n_*` from Grouper's.
+  This closes the *metastable-reset-release* bug (which existed even with the
+  shared reset) independently of the independent-reset decision.
 - **`chip_top_dual_clock.sdc`** — a second async reset net needs the same
   `set_false_path` / input-delay treatment the shared one has.
 
@@ -187,6 +194,52 @@ argument); item 18 (voltage-proxy precedent); `integration/pd/chip_top_dual_cloc
 (`create_clock -name HCLK16`).
 **Found:** 2026-08-28.
 
+### 5. `ahb_to_grp_bridge` captures GRP read data on a fixed delay, not on `GRP_READY`
+
+`ahb_to_grp_bridge.v` asserts `GRP_WE`/`GRP_RE` for `HOLD_CYCLES` (default 6)
+`IQ_CLK` edges and then latches `GRP_RDATA` into `response_rdata` when the
+hold counter reaches zero. `GRP_READY` is a port but is explicitly **not**
+used as a completion condition (see the `_unused_grp_ready` note at the
+bottom of the module) — the legacy bridge did not make it load-bearing and
+Trouper currently drives it as a combinational status.
+
+**Risk:** correctness depends on `HOLD_CYCLES` ≥ Trouper's worst-case GRP
+read latency, *including* `reg_bank`'s internal every-other-cycle enable and
+any future added pipeline stage on that read path. If Trouper's read latency
+ever grows past the hold window, reads return stale/!ready data silently —
+no protocol error, no timeout.
+
+**Action.** Either qualify `response_rdata` capture and `SRC_WAIT_ACK`
+completion with `GRP_READY` (turning the fixed hold into a bounded
+worst-case), or add an explicit assertion + directed test that pins
+Trouper's GRP read latency at ≤ `HOLD_CYCLES` and fails CI if it regresses.
+Fold into any chip-top TB once one exists.
+**See:** `integration/rtl/ahb_to_grp_bridge.v` (F4 note in the header;
+`hold_count` / `_unused_grp_ready`); Trouper `reg_bank` read timing;
+Trouper Open Risks #16/#29 (GRP bus contract).
+**Found:** 2026-08-28 (CDC review, branch `timn/ahb-bridge-cdc-review`).
+
+### 6. `ahb_to_grp_bridge` has no error or timeout path — a stuck GRP access hangs Grouper
+
+`HRESP` is hardwired to `OKAY`. There is no address range check and no
+transaction timeout: if a GRP access never completes (Trouper wedged, clock
+stopped, `HOLD`-window assumption from #5 violated in a way that stalls the
+FSM), the bridge holds `HREADY` low **forever** and the picorv32 AHB master
+blocks on that transfer with no recovery short of a full-chip reset.
+
+**Risk:** a single wedged peripheral access takes the whole Grouper CPU down
+with it, with no software-visible fault to trap on.
+
+**Action.** Add a coarse transaction watchdog in the `HCLK` domain
+(`SRC_WAIT_ACK` timeout → `HRESP=ERROR`, `HREADY=1`, drop the request) so
+firmware gets a bus fault instead of a hang; optionally an out-of-range
+`HADDR` → `ERROR` decode. Coordinate with Grouper on whether its bus fault
+is actually trapped (Trouper Open Risks #49 point 2 flags the same gap on
+the other adapter).
+**See:** `integration/rtl/ahb_to_grp_bridge.v` (F5 note; `assign HRESP =
+1'b0`); `integration/ip/grouper/hw/rtl/cpu_ss.sv` (fault handling).
+**Found:** 2026-08-28 (CDC review, branch `timn/ahb-bridge-cdc-review`).
+
 ---
 
 ## Low
@@ -210,3 +263,20 @@ the result into #1's sign-off.
 **See:** #1; `integration/ip/grouper/hw/rtl/interconnect/ahb_conn_buff.sv`
 header; `integration/ip/grouper/CLAUDE.md` (TB targets).
 **Found:** 2026-08-28.
+
+### 7. `ahb_to_grp_bridge` accepts `HTRANS=SEQ` and ignores `HBURST` — MMIO-only by assumption
+
+`ahb_transfer` in `ahb_to_grp_bridge.v` is true for `NONSEQ` **and** `SEQ`,
+`HBURST` is not a port, and `HTRANS` is only inspected in `SRC_IDLE`. So a
+master wait state / `BUSY` in the data phase is not honoured, and a burst is
+handled as a sequence of independent single beats, each paying the full
+request→hold→ack CDC latency (~6 `IQ_CLK` + handshake per beat). Fine for the
+register bus this bridge actually serves — Grouper's `ext_ahb_m_if` MMIO
+path issues single byte transfers — but it is an unstated assumption.
+
+**Action.** No functional fix needed for the current use. Either gate
+`ahb_transfer` on `HBURST == SINGLE` and error otherwise, or leave as-is with
+the header comment (F6) making the single-beat-MMIO assumption explicit.
+Revisit only if anything ever puts a bursting master on this port.
+**See:** `integration/rtl/ahb_to_grp_bridge.v` (F6 note; `ahb_transfer`).
+**Found:** 2026-08-28 (CDC review, branch `timn/ahb-bridge-cdc-review`).

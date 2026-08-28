@@ -2,13 +2,48 @@
 //
 // CDC-safe AHB (HCLK) to Trouper GRP (IQ_CLK) bridge.
 //
-// The two clocks are intentionally unrelated: Grouper runs at 16 MHz while
-// Trouper's IQ clock runs at 32 MHz. A request-toggle / acknowledge-toggle
-// handshake transfers one transaction at a time. The request bundle is held
-// stable in the HCLK domain from before its toggle crosses into IQ_CLK until
-// the acknowledge toggle crosses back; the response bundle is held stable in
+// The two clocks are intentionally unrelated: Grouper runs at 16 MHz (25 MHz
+// on the test chip -- integration/planning/Open Risks.md #4) while Trouper's
+// IQ clock runs at 32 MHz. A request-toggle / acknowledge-toggle handshake
+// transfers one transaction at a time. The request bundle is held stable in
+// the HCLK domain from before its toggle crosses into IQ_CLK until the
+// acknowledge toggle crosses back; the response bundle is held stable in
 // IQ_CLK until the next request. This is a standard bundled-data CDC scheme:
 // only the single-bit toggles enter two-flop synchronizers.
+//
+// -----------------------------------------------------------------------------
+// CDC hardening (2026-08-28, branch timn/ahb-bridge-cdc-review)
+// -----------------------------------------------------------------------------
+//   F1  Per-domain reset synchronizers. HRESETn is an external asynchronous
+//       reset; it is resynchronized to HCLK and, separately, to IQ_CLK (async
+//       assert, sync deassert) before use, so the handshake / synchronizer
+//       flops never see recovery/removal metastability on reset release.
+//       `set_clock_groups -asynchronous` does NOT cover reset. Both syncs take
+//       the same HRESETn today (shared chip-top reset, Open Risks #3); if a
+//       second reset pad is ever added, drive the IQ_CLK sync from Trouper's
+//       reset and the HCLK sync from Grouper's -- that is exactly the
+//       "each half reset by its own domain" requirement in Open Risks #3b,
+//       and this structure is ready for it.
+//   F3  The 2-flop synchronizers carry (* keep *) in addition to
+//       (* ASYNC_REG *): ASYNC_REG is a Vivado attribute, ignored by the
+//       Yosys / OpenROAD flow used here, so `keep` is what actually stops the
+//       flop pair from being merged or retimed. The async clock-group cut is
+//       in chip_top_dual_clock.sdc; the payload nets are additionally bounded
+//       there with `set_max_delay -datapath_only` (F2).
+//
+// Known limitations, NOT addressed here -- see
+// integration/planning/Open Risks.md items 5/6/7:
+//   F4  Read data is captured on a fixed HOLD_CYCLES delay, not qualified by
+//       GRP_READY (which is deliberately ignored, see below). Correct only
+//       while HOLD_CYCLES (default 6) >= Trouper's worst-case GRP read latency
+//       including its every-other-cycle enable.
+//   F5  No error / timeout path: HRESP is tied OKAY, and a GRP access that
+//       never completes holds HREADY low forever (Grouper firmware hangs).
+//   F6  HTRANS=SEQ is accepted and HBURST is not observed. HTRANS is only
+//       looked at in SRC_IDLE, so a master BUSY / wait state in the data phase
+//       is not honoured and bursts are serialized one beat at a time at full
+//       CDC latency. MMIO-register-bus-only assumption -- fine for this bus,
+//       stated here so it is a choice, not an accident.
 
 `default_nettype none
 
@@ -41,6 +76,23 @@ module ahb_to_grp_bridge #(
 
     assign HRESP = 1'b0; // AHB OKAY
 
+    // -------------------------------------------------------------------------
+    // F1: per-domain reset synchronizers. Async assert, sync deassert. Both
+    // are sourced from HRESETn today (shared chip-top reset); split the
+    // sources if/when a second reset pad lands (Open Risks #3).
+    // -------------------------------------------------------------------------
+    (* ASYNC_REG = "TRUE", keep = "true" *) reg hrst_n_meta, hrst_n_sync;
+    always @(posedge HCLK or negedge HRESETn) begin
+        if (!HRESETn) {hrst_n_sync, hrst_n_meta} <= 2'b00;
+        else          {hrst_n_sync, hrst_n_meta} <= {hrst_n_meta, 1'b1};
+    end
+
+    (* ASYNC_REG = "TRUE", keep = "true" *) reg iqrst_n_meta, iqrst_n_sync;
+    always @(posedge IQ_CLK or negedge HRESETn) begin
+        if (!HRESETn) {iqrst_n_sync, iqrst_n_meta} <= 2'b00;
+        else          {iqrst_n_sync, iqrst_n_meta} <= {iqrst_n_meta, 1'b1};
+    end
+
     localparam [1:0] HTRANS_NONSEQ = 2'b10;
     localparam [1:0] SRC_IDLE      = 2'd0,
                      SRC_CAPTURE   = 2'd1,
@@ -60,10 +112,12 @@ module ahb_to_grp_bridge #(
     reg [7:0] response_rdata;
     reg       acknowledge_toggle;
 
-    // Two-flop synchronizers. ASYNC_REG keeps implementation tools from
-    // retiming these into ordinary logic.
-    (* ASYNC_REG = "TRUE" *) reg acknowledge_sync_1, acknowledge_sync_2;
-    (* ASYNC_REG = "TRUE" *) reg request_sync_1, request_sync_2;
+    // Two-flop synchronizers. ASYNC_REG is Vivado-only (ignored by Yosys /
+    // OpenROAD); `keep` is what actually prevents this flow from merging or
+    // retiming the flop pair. See chip_top_dual_clock.sdc for the async
+    // clock-group cut and the -datapath_only payload bound (F2/F3).
+    (* ASYNC_REG = "TRUE", keep = "true" *) reg acknowledge_sync_1, acknowledge_sync_2;
+    (* ASYNC_REG = "TRUE", keep = "true" *) reg request_sync_1, request_sync_2;
 
     reg [1:0] src_state;
     reg [HOLD_WIDTH-1:0] hold_count;
@@ -74,8 +128,8 @@ module ahb_to_grp_bridge #(
 
     // Source: accept an AHB transfer, capture write data in the following
     // data phase, then stall HREADY until Trouper has completed the request.
-    always @(posedge HCLK or negedge HRESETn) begin
-        if (!HRESETn) begin
+    always @(posedge HCLK or negedge hrst_n_sync) begin
+        if (!hrst_n_sync) begin
             request_addr       <= 8'd0;
             request_wdata      <= 8'd0;
             request_write      <= 1'b0;
@@ -136,8 +190,8 @@ module ahb_to_grp_bridge #(
     // Destination: after the synchronized request toggle is observed, latch
     // the stable bundle, hold the native GRP request for HOLD_CYCLES IQ edges,
     // then return read data and acknowledge completion.
-    always @(posedge IQ_CLK or negedge HRESETn) begin
-        if (!HRESETn) begin
+    always @(posedge IQ_CLK or negedge iqrst_n_sync) begin
+        if (!iqrst_n_sync) begin
             request_sync_1    <= 1'b0;
             request_sync_2    <= 1'b0;
             request_seen      <= 1'b0;

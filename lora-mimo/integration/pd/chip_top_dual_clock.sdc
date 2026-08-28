@@ -26,6 +26,32 @@ set_clock_uncertainty 0.5 [get_clocks HCLK16]
 set_clock_uncertainty 0.5 [get_clocks IQ_CLK32]
 
 # =============================================================================
+# ahb_to_grp_bridge CDC payload bounds (F2, branch timn/ahb-bridge-cdc-review)
+#
+# set_clock_groups -asynchronous above already makes every HCLK16 <-> IQ_CLK32
+# path false. The bundled-data CDC inside u_bridge is safe under that cut ONLY
+# if the request / response payload nets settle at their capture flop within
+# about one destination-clock period of the synchronized request / ack toggle
+# -- the 2-flop synchronizers on request_toggle / acknowledge_toggle give
+# ~1-2 destination periods of slack and nothing else bounds the payload. Bound
+# just those payload nets with -datapath_only, which checks net delay without
+# reintroducing the (meaningless) launch/capture clock relationship. The bound
+# is one full destination period -- conservative, meant to catch a gross
+# routing blow-up, not to tighten a real path.
+#
+#   request_addr / request_wdata / request_write : launched by HCLK16,
+#       captured in the IQ_CLK32 domain  -> bound to the IQ_CLK32 period.
+#   response_rdata : launched by IQ_CLK32, captured in the HCLK16 domain
+#       -> bound to the HCLK16 period. If HCLK moves to 25 MHz (Open Risks
+#       #4), change 62.5 to 40.0 here and in chip_top_dual_clock_signoff.sdc.
+# =============================================================================
+set brg_req_payload  [get_nets -hierarchical \
+    {u_bridge.request_addr[*] u_bridge.request_wdata[*] u_bridge.request_write}]
+set brg_resp_payload [get_nets -hierarchical {u_bridge.response_rdata[*]}]
+set_max_delay -datapath_only 31.25 -through $brg_req_payload
+set_max_delay -datapath_only 62.5  -through $brg_resp_payload
+
+# =============================================================================
 # Trouper IQ_CLK32-domain multicycle exceptions, ported from Trouper's own
 # standalone P&R SDC (ip/trouper/src/config/pnr_32m_scoped_v25_b6.sdc).
 #
