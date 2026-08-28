@@ -1,69 +1,74 @@
-# GRP window: Grouper can write any byte, but only reads word-aligned bytes
+# GRP window byte-lane read fix
 
-**Status:** open interface issue, found 2026-08-28 by `integration/tb/tb_chip_top.v` (T3).
-**Severity:** medium — constrains firmware; may need an RTL fix depending on the
-firmware's Z/Z_kk/N_ACC access pattern.
+**Status:** FIXED 2026-08-28 (grouper local integration patch). Found the same
+day by `integration/tb/tb_chip_top.v`.
 
-## Symptom
+## The bug
 
-Grouper firmware doing `lbu` from Trouper GRP registers via the
-`0x8001_0000` ext-periph window:
+Grouper firmware doing `lbu` from Trouper GRP registers via the `0x8001_0000`
+ext-periph window:
 
-| CPU access | result |
-|---|---|
-| `lbu` at byte offset `0x_0`, `0x_4`, `0x_8`, `0x_C` (addr[1:0]==0) | correct |
-| `lbu` at any other byte offset (addr[1:0] != 0) | **returns 0x00** |
-| `sb` at **any** byte offset | correct |
+| CPU access | before fix | after fix |
+|---|---|---|
+| `lbu` at byte offset `0x_0/0x_4/0x_8/0x_C` (addr[1:0]==0) | correct | correct |
+| `lbu` at any other byte offset (addr[1:0] != 0) | **0x00** | correct |
+| `sb` at any byte offset | correct | correct |
 
-So a `reg_bank` register at e.g. 0x08 reads fine; 0x09/0x0A/0x0B read as 0.
-Trouper's byte-packed multi-byte readback fields are the ones that hurt:
-`Z_kl` 0x40–0x63, `Z_kk` 0x64–0x6F, `N_ACC` 0x21–0x23, `SC_STAT` 0x24–0x25,
-`sc_first_hit_dbg` 0x28–0x2B, etc. Only every 4th byte is reachable.
+So Trouper's byte-packed multi-byte readback fields (`Z_kl` 0x40–0x63, `Z_kk`
+0x64–0x6F, `N_ACC` 0x21–0x23, `SC_STAT` 0x24–0x25, `sc_first_hit_dbg`
+0x28–0x2B, ...) were only readable one byte in four.
 
 ## Mechanism
 
-Not a bug in `ahb_to_grp_bridge` — the byte address reaches `GRP_ADDR`
-intact, and reg_bank/peek returns the right byte (confirmed: the SPI oracle
-reads all of them correctly, and `GRP_RDATA` carries the right value).
+Not a bug in `ahb_to_grp_bridge` — the byte address reached `GRP_ADDR`
+intact and reg_bank/peek returned the right byte (the SPI oracle read all of
+them fine). The truncation was on the **Grouper side**:
 
-The truncation is on the **Grouper side**, structural to its 8-bit
-`EXT_DATA_WIDTH` external-peripheral port:
-
-- `periph_ss.sv` (~L597): `ext_periph_HRDATA = {24'b0, ext_HRDATA};`
-  the 8-bit slave's data is zero-extended into **HRDATA[7:0]** regardless of
-  the transfer's byte lane.
+- `periph_ss.sv`: `ext_periph_HRDATA = {24'b0, ext_HRDATA}` — the 8-bit
+  slave's data was zero-extended into **HRDATA[7:0]** regardless of byte lane.
 - `picorv32.v` (~L421): a byte load extracts
-  `mem_rdata_word = {24'b0, mem_rdata[8*addr[1:0] +: 8]}` — it takes the byte
-  from the **addressed lane** of HRDATA.
+  `mem_rdata_word = {24'b0, mem_rdata[8*addr[1:0] +: 8]}` — the **addressed**
+  lane. `cpu_ss.sv` passes HRDATA straight through (`mem_rdata = HRDATA`).
 
-For `addr[1:0] != 0` those disagree: the data is in lane 0, picorv32 reads
-lane 1/2/3, gets 0. `cpu_ss.sv` passes `HRDATA` straight through
-(`mem_rdata = HRDATA`), no lane replication.
+For `addr[1:0] != 0` those disagreed: data in lane 0, picorv32 read lane
+1/2/3, got 0. Writes were unaffected because picorv32 replicates the store
+byte to every lane (`mem_la_wdata = {4{rs2[7:0]}}`), so periph_ss's
+`HWDATA[7:0]` tap always saw it.
 
-Writes are unaffected because picorv32 replicates the store byte to every
-lane (`mem_la_wdata = {4{rs2[7:0]}}`), so `periph_ss`'s `HWDATA[7:0]` tap
-always sees it.
+## Fix
 
-A software `lw` from an aligned base does **not** recover the packed bytes
-either: `ext_HRDATA` only ever populates HRDATA[7:0], so `lw 0x40` yields
-`0x000000` ++ `reg_bank[0x40]`, not the four packed bytes.
+`periph_ss.sv`, one line, in `patches/grouper-local-integration.patch`:
 
-## Options
+```verilog
+-  assign ext_periph_HRDATA = {{(DATA_WIDTH-EXT_DATA_WIDTH){1'b0}}, ext_HRDATA};
++  assign ext_periph_HRDATA = {(DATA_WIDTH/EXT_DATA_WIDTH){ext_HRDATA}};
+```
 
-1. **Firmware works around it** — only viable if every GRP field Grouper
-   needs to *read* is placed at a word-aligned offset in Trouper's map, or
-   Grouper reads them one aligned `lbu` per byte with the register map
-   rearranged. Trouper's current map is dense byte packing, so this means a
-   Register Map change on the Trouper side (coordinate with that team).
-2. **Bridge replicates read data across lanes** — `ahb_to_grp_bridge` drives
-   `HRDATA = {4{response_rdata}}` instead of `{24'b0, response_rdata}`, and
-   `periph_ss` forwards the full 32 bits (it currently forces the top 24 to
-   0). Then picorv32's lane extract lands on the right byte for any offset.
-   Cleanest, but touches grouper's `periph_ss` (already carrying a local
-   integration patch) — fold it into that patch.
-3. **Widen the ext bus** — `EXT_DATA_WIDTH = 32` end to end and let the
-   bridge present a real 32-bit-that-is-really-8 slave. Largest change.
+Replicate the 8-bit read data across every byte lane instead of zero-extending
+into lane 0 — the same trick picorv32 already uses on its store path, so the
+two directions are now symmetric. picorv32's lane select then lands on the
+byte for any address. Cost: zero gates (rewiring only, `{4{x}}` vs
+`{24'b0,x}`).
 
-Option 2 is the recommended fix; until then, treat "Grouper reads GRP
-registers at word-aligned offsets only" as a hard constraint and keep
-`tb_chip_top.v` T3 as the regression that pins it.
+Not a functional change for standalone Grouper: `ext_periph_HRDATA` only
+carries data when the external-peripheral slot (SLOT_EXT_PERIPH) is actually
+driven, which happens only in chip_top — Grouper's own UART/GPIO/SPI/QSPI
+peripherals are on other slots and untouched. Should still ride along on the
+next grouper chip-core synth/regression as due diligence.
+
+Consequence retained: a 32-bit `lw` from this window returns `{4{byte}}`, not
+a packed word. Multi-byte fields are read one `lbu` per byte and reconstructed
+in firmware (which is what Trouper's byte-packed register map already assumes
+— reg_bank.v: "big-endian multi-byte fields"):
+
+```c
+uint32_t z01_i_24 = (grp_rd8(0x40) << 16) | (grp_rd8(0x41) << 8) | grp_rd8(0x42);
+```
+
+## Regression
+
+`tb_chip_top.v`:
+- T3a — `lbu 0x08` (aligned) and `lbu 0x09` (unaligned) both read the register.
+- T3b — CPU byte-copies Z_01_I (0x40..0x42) into W shadow (0x30..0x32);
+  unaligned GRP reads and writes composed into one multi-byte field copy,
+  checked over SPI.

@@ -36,6 +36,22 @@ for p in "$GROUPER_ROOT/hw/rtl/grouper_soc_top.sv" "$TROUPER_ROOT/src/top/troupe
     [ -f "$p" ] || { echo "ERROR: missing $p (submodules not initialised?)"; exit 1; }
 done
 
+# Grouper local integration patch (ext_ahb_m_if exposure + CPU->periph pipe +
+# ext read-data lane replication). chip_top.v and this testbench both depend on
+# it; it is not upstream. Apply it to the grouper checkout if it is not already
+# there. Never force -- warn and let the build fail loudly on a dirty state.
+PATCH="$INTEG/patches/grouper-local-integration.patch"
+if grep -q 'DATA_WIDTH/EXT_DATA_WIDTH){ext_HRDATA}' "$GROUPER_ROOT/hw/rtl/periph_ss.sv" 2>/dev/null \
+   && grep -q 'ext_ahb_m_if_HADDR' "$GROUPER_ROOT/hw/rtl/grouper_soc_top.sv" 2>/dev/null; then
+    echo "grouper local integration patch: already applied"
+elif git -C "$GROUPER_ROOT" apply --check "$PATCH" 2>/dev/null; then
+    git -C "$GROUPER_ROOT" apply "$PATCH" && echo "grouper local integration patch: applied"
+else
+    echo "WARNING: grouper local integration patch is neither applied nor cleanly"
+    echo "         appliable to $GROUPER_ROOT -- build will likely fail."
+    echo "         patch: $PATCH"
+fi
+
 mkdir -p "$RUN_DIR"
 
 # Mounts: repo at /repo, submodule roots at /grouper and /trouper (they may be

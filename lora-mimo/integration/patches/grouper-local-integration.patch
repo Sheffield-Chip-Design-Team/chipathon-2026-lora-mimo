@@ -1,0 +1,289 @@
+Grouper local integration patch (NOT upstream) -- apply to the
+chipathon-2026-grouper submodule checkout under
+lora-mimo/integration/ip/grouper/ before elaborating or simulating chip_top.
+
+Baseline: grouper commit 3c730eb ("render GDS").
+
+Contents:
+  hw/rtl/digital_ss.sv       - add the ahb_conn_buff CPU->periph pipeline
+                               register slice (closes the max_ss_125C_3v00
+                               setup violator, Open Risks #1) and route
+                               digital_ss's ext_ahb_m_if_* out to its port.
+  hw/rtl/grouper_soc_top.sv  - expose ext_ahb_m_if_* at the SoC top instead of
+                               tying it off, so chip_top's ahb_to_grp_bridge
+                               has a real cross-project master to bridge from.
+  hw/rtl/periph_ss.sv        - replicate ext read data across every byte lane
+                               instead of zero-extending into the low lane, so
+                               non-word-aligned lbu from the ext-periph window
+                               reads the right byte (see
+                               planning/grp-ext-periph-byte-lane.md).
+
+Apply:   git -C lora-mimo/integration/ip/grouper apply \
+             lora-mimo/integration/patches/grouper-local-integration.patch
+Check:   git -C lora-mimo/integration/ip/grouper apply --check <same>
+scripts/run_tb_chip_top.sh applies it automatically if not already present.
+
+diff --git a/hw/rtl/digital_ss.sv b/hw/rtl/digital_ss.sv
+index e6b510e..39664cd 100644
+--- a/hw/rtl/digital_ss.sv
++++ b/hw/rtl/digital_ss.sv
+@@ -56,6 +56,28 @@ module digital_ss #(
+   logic                       cpu_ss_ahb_s_if_HREADY;
+   logic                       cpu_ss_ahb_s_if_HRESP;
+ 
++  // AHB from the CPU->Periph pipeline register slice (u_ahb_cpu_periph_pipe,
++  // below) to Periph SS. Same bundle as cpu_ss_ahb_s_if_* above, one register
++  // stage later in each direction. LOCAL INTEGRATION PATCH -- see that
++  // instance's header and lora-mimo/integration/planning/Open Risks.md #1.
++  logic [ADDR_WIDTH-1:0]      periph_ahb_s_if_HADDR;
++  logic [2:0]                 periph_ahb_s_if_HBURST;
++  logic                       periph_ahb_s_if_HMASTLOCK;
++  logic [3:0]                 periph_ahb_s_if_HPROT;
++  logic [2:0]                 periph_ahb_s_if_HSIZE;
++  logic [1:0]                 periph_ahb_s_if_HTRANS;
++  logic [DATA_WIDTH-1:0]      periph_ahb_s_if_HWDATA;
++  logic                       periph_ahb_s_if_HWRITE;
++  logic [DATA_WIDTH-1:0]      periph_ahb_s_if_HRDATA;
++  logic                       periph_ahb_s_if_HREADY;
++  logic                       periph_ahb_s_if_HRESP;
++
++  // Byproducts of reusing ahb_conn_buff here: periph_ss is the top of its own
++  // sub-fabric (no HSEL/HREADYIN ports of its own -- it treats itself as
++  // always selected), so these two buffer outputs have nothing to drive.
++  logic                       unused_periph_pipe_m_HSEL;
++  logic                       unused_periph_pipe_m_HREADYIN;
++
+   // ROM Interface
+   logic [ROM_ADDR_WIDTH-1:0]  rom_addr;
+   logic                       rom_read;
+@@ -155,6 +177,68 @@ module digital_ss #(
+     .ram_rdata  (ram_rdata)
+   );
+ 
++  // --- CPU -> Periph AHB pipeline register slice --------------------------------
++  //
++  // LOCAL INTEGRATION PATCH (not upstream). Added for the Grouper<->Trouper
++  // chip-top P&R: breaks the long combinational CPU -> interconnect_ss
++  // address-decode / request-fanout cone that is the sole grouper-side
++  // max_ss_125C_3v00 setup violator (HCLK16 path group, startpoint
++  // u_cpu_ss.u_cpu.latched_branch, ~-24 ns WNS pre-fix, ~250 fanout endpoints
++  // across every peripheral slot -- job 5117). Reuses ahb_conn_buff, the same
++  // register-slice module the fabric already uses, rather than a hand-written
++  // pipeline FSM.
++  //
++  // COST: ahb_conn_buff buffers BOTH request and response, so every
++  // peripheral (UART, GPIO, SPI M/S, QSPI, debug, and the external-periph /
++  // Grouper->Trouper bridge window) access takes 2 extra HCLK cycles
++  // (1-cycle transfer -> 3). RAM/ROM are NOT affected (dev wires them
++  // straight to the CPU, off this bus). picorv32 tolerates arbitrary wait
++  // states, so this is expected functionally safe, but the CPI cost is
++  // unmeasured and MUST be signed off by both the Grouper and Trouper teams
++  // -- see lora-mimo/integration/planning/Open Risks.md #1.
++  //
++  // Lint-clean; NOT simulated. Confirmed to remove the target violator in
++  // test P&R (jobs 4862, 5069-class recipe).
++
++  ahb_conn_buff #(
++    .ADDR_WIDTH (ADDR_WIDTH),
++    .DATA_WIDTH (DATA_WIDTH)
++  ) u_ahb_cpu_periph_pipe (
++    .hclk        (clk),
++    .hresetn     (rst_n),
++
++    // Upstream: the CPU is the sole master and there is no other bus segment
++    // sharing this port, so it is always selected / always able to accept.
++    .s_HADDR     (cpu_ss_ahb_s_if_HADDR),
++    .s_HBURST    (cpu_ss_ahb_s_if_HBURST),
++    .s_HMASTLOCK (cpu_ss_ahb_s_if_HMASTLOCK),
++    .s_HPROT     (cpu_ss_ahb_s_if_HPROT),
++    .s_HSIZE     (cpu_ss_ahb_s_if_HSIZE),
++    .s_HTRANS    (cpu_ss_ahb_s_if_HTRANS),
++    .s_HWDATA    (cpu_ss_ahb_s_if_HWDATA),
++    .s_HWRITE    (cpu_ss_ahb_s_if_HWRITE),
++    .s_HREADYIN  (1'b1),
++    .s_HSEL      (1'b1),
++    .s_HRDATA    (cpu_ss_ahb_s_if_HRDATA),
++    .s_HREADYOUT (cpu_ss_ahb_s_if_HREADY),
++    .s_HRESP     (cpu_ss_ahb_s_if_HRESP),
++
++    // Downstream: periph_ss (no HSEL/HREADYIN ports of its own).
++    .m_HADDR     (periph_ahb_s_if_HADDR),
++    .m_HBURST    (periph_ahb_s_if_HBURST),
++    .m_HMASTLOCK (periph_ahb_s_if_HMASTLOCK),
++    .m_HPROT     (periph_ahb_s_if_HPROT),
++    .m_HSIZE     (periph_ahb_s_if_HSIZE),
++    .m_HTRANS    (periph_ahb_s_if_HTRANS),
++    .m_HWDATA    (periph_ahb_s_if_HWDATA),
++    .m_HWRITE    (periph_ahb_s_if_HWRITE),
++    .m_HREADYIN  (unused_periph_pipe_m_HREADYIN),
++    .m_HSEL      (unused_periph_pipe_m_HSEL),
++    .m_HRDATA    (periph_ahb_s_if_HRDATA),
++    .m_HREADYOUT (periph_ahb_s_if_HREADY),
++    .m_HRESP     (periph_ahb_s_if_HRESP)
++  );
++
+   // --- Peripheral Subsystem --------------------------------------------------------
+   // Interconnect + AHBlite Peripheral blocks (UART, GPIO, SPI M/S, QSPI)
+ 
+@@ -166,17 +250,19 @@ module digital_ss #(
+     .HCLK                (clk),
+     .HRESETn             (rst_n),
+ 
+-    .HADDR               (cpu_ss_ahb_s_if_HADDR),
+-    .HBURST              (cpu_ss_ahb_s_if_HBURST),
+-    .HMASTLOCK           (cpu_ss_ahb_s_if_HMASTLOCK),
+-    .HPROT               (cpu_ss_ahb_s_if_HPROT),
+-    .HSIZE               (cpu_ss_ahb_s_if_HSIZE),
+-    .HTRANS              (cpu_ss_ahb_s_if_HTRANS),
+-    .HWDATA              (cpu_ss_ahb_s_if_HWDATA),
+-    .HWRITE              (cpu_ss_ahb_s_if_HWRITE),
+-    .HRDATA              (cpu_ss_ahb_s_if_HRDATA),
+-    .HREADY              (cpu_ss_ahb_s_if_HREADY),
+-    .HRESP               (cpu_ss_ahb_s_if_HRESP),
++    // Fed from the pipeline register slice (u_ahb_cpu_periph_pipe), NOT
++    // directly from cpu_ss -- local integration patch, see above.
++    .HADDR               (periph_ahb_s_if_HADDR),
++    .HBURST              (periph_ahb_s_if_HBURST),
++    .HMASTLOCK           (periph_ahb_s_if_HMASTLOCK),
++    .HPROT               (periph_ahb_s_if_HPROT),
++    .HSIZE               (periph_ahb_s_if_HSIZE),
++    .HTRANS              (periph_ahb_s_if_HTRANS),
++    .HWDATA              (periph_ahb_s_if_HWDATA),
++    .HWRITE              (periph_ahb_s_if_HWRITE),
++    .HRDATA              (periph_ahb_s_if_HRDATA),
++    .HREADY              (periph_ahb_s_if_HREADY),
++    .HRESP               (periph_ahb_s_if_HRESP),
+ 
+     .uart_rx_irq         (uart_rx_irq),
+     .uart_rx_error_irq   (uart_rx_error_irq),
+diff --git a/hw/rtl/grouper_soc_top.sv b/hw/rtl/grouper_soc_top.sv
+index a521adc..76a3248 100644
+--- a/hw/rtl/grouper_soc_top.sv
++++ b/hw/rtl/grouper_soc_top.sv
+@@ -1,12 +1,14 @@
+ module grouper_soc_top #(
+-  parameter int NUM_GPIO = 16
++  parameter int NUM_GPIO = 16,
++  parameter int EXT_ADDR_WIDTH = 8,
++  parameter int EXT_DATA_WIDTH = 8
+ )(
+   // Clock and Reset Interfaces
+   input logic                  clk,         // system clock (from board-level oscillator)
+   input logic                  async_rst_n, // Active low asynchronous reset (from push button)
+ 
+   // UART Interface
+-  output logic                 uart_tx,     // UART Transmit  
++  output logic                 uart_tx,     // UART Transmit
+   input  logic                 uart_rx,     // UART Receive
+ 
+   // GPIO PAD Interface
+@@ -17,8 +19,27 @@ module grouper_soc_top #(
+   output logic [NUM_GPIO-1:0]  gpio_sl,     // GPIO Slew rate   (0=fast, 1=slow)
+   output logic [NUM_GPIO-1:0]  gpio_ie,     // GPIO Input enable
+   output logic [NUM_GPIO-1:0]  gpio_pu,     // GPIO Pull-up
+-  output logic [NUM_GPIO-1:0]  gpio_pd      // GPIO Pull-down
+-);  
++  output logic [NUM_GPIO-1:0]  gpio_pd,     // GPIO Pull-down
++
++  // External AHB Master Interface -- was tied off dead inside this module
++  // (digital_ss's own ext_ahb_m_if_* left unconnected/'0/1'b1 below) until
++  // 2026-08-22, when the Grouper<->Trouper chip-top integration needed a
++  // real cross-project bus to bridge from. See
++  // planning/grouper-trouper-landscape-floorplan-2026-08.md, Open Item #1 --
++  // this is a local patch to the vendored submodule checkout, not upstream
++  // yet.
++  output logic [EXT_ADDR_WIDTH-1:0]  ext_ahb_m_if_HADDR,
++  output logic [2:0]                 ext_ahb_m_if_HBURST,
++  output logic                       ext_ahb_m_if_HMASTLOCK,
++  output logic [3:0]                 ext_ahb_m_if_HPROT,
++  output logic [2:0]                 ext_ahb_m_if_HSIZE,
++  output logic [1:0]                 ext_ahb_m_if_HTRANS,
++  output logic [EXT_DATA_WIDTH-1:0]  ext_ahb_m_if_HWDATA,
++  output logic                       ext_ahb_m_if_HWRITE,
++  input  logic [EXT_DATA_WIDTH-1:0]  ext_ahb_m_if_HRDATA,
++  input  logic                       ext_ahb_m_if_HREADY,
++  input  logic                       ext_ahb_m_if_HRESP
++);
+  
+   // --- Internal Signals ----------------------------------------------------------------
+ 
+@@ -73,6 +94,8 @@ module grouper_soc_top #(
+   digital_ss #(
+     .ADDR_WIDTH                (32),
+     .DATA_WIDTH                (32),
++    .EXT_ADDR_WIDTH             (EXT_ADDR_WIDTH),
++    .EXT_DATA_WIDTH             (EXT_DATA_WIDTH),
+     .NUM_GPIO                  (NUM_GPIO)
+     
+   ) u_grouper_soc_dig_ss (
+@@ -94,18 +117,23 @@ module grouper_soc_top #(
+ 
+     .gpio_sync_en_n            (gpio_sync_en_n),
+ 
+-    // FIXME - change the AHB interface to internal grouper interface
+-    .ext_ahb_m_if_HADDR        (),
+-    .ext_ahb_m_if_HBURST       (),
+-    .ext_ahb_m_if_HMASTLOCK    (),
+-    .ext_ahb_m_if_HPROT        (),
+-    .ext_ahb_m_if_HSIZE        (),
+-    .ext_ahb_m_if_HTRANS       (),
+-    .ext_ahb_m_if_HWDATA       (),
+-    .ext_ahb_m_if_HWRITE       (),
+-    .ext_ahb_m_if_HRDATA       ('0),
+-    .ext_ahb_m_if_HREADY       (1'b1),
+-    .ext_ahb_m_if_HRESP        (1'b0)
++    // Local integration patch (not upstream): expose digital_ss's external
++    // AHB master at chip-top instead of tying it off. dev's digital_ss already
++    // has ext_ahb_m_if_* natively, but its grouper_soc_top still ties them off
++    // -- this whole wrapper-level change (params + port list above, these
++    // connections here) stays local. Was Open Item #1 in
++    // lora-mimo/planning/grouper-trouper-landscape-floorplan-2026-08.md.
++    .ext_ahb_m_if_HADDR        (ext_ahb_m_if_HADDR),
++    .ext_ahb_m_if_HBURST       (ext_ahb_m_if_HBURST),
++    .ext_ahb_m_if_HMASTLOCK    (ext_ahb_m_if_HMASTLOCK),
++    .ext_ahb_m_if_HPROT        (ext_ahb_m_if_HPROT),
++    .ext_ahb_m_if_HSIZE        (ext_ahb_m_if_HSIZE),
++    .ext_ahb_m_if_HTRANS       (ext_ahb_m_if_HTRANS),
++    .ext_ahb_m_if_HWDATA       (ext_ahb_m_if_HWDATA),
++    .ext_ahb_m_if_HWRITE       (ext_ahb_m_if_HWRITE),
++    .ext_ahb_m_if_HRDATA       (ext_ahb_m_if_HRDATA),
++    .ext_ahb_m_if_HREADY       (ext_ahb_m_if_HREADY),
++    .ext_ahb_m_if_HRESP        (ext_ahb_m_if_HRESP)
+   );
+ 
+ endmodule
+diff --git a/hw/rtl/periph_ss.sv b/hw/rtl/periph_ss.sv
+index 0c1fb70..7c7d5c9 100644
+--- a/hw/rtl/periph_ss.sv
++++ b/hw/rtl/periph_ss.sv
+@@ -579,8 +579,19 @@ logic [3:0] mux_qspi_sio_oe;  // internal signal for QSPI data output enable
+   // The external port is deliberately narrower than the fabric slot
+   // (EXT_ADDR_WIDTH / EXT_DATA_WIDTH, both 8 by default) to keep the wire
+   // count out of the block down, so the address and write data are truncated
+-  // and the read data zero-extended. Note the consequence: the slot decodes a
+-  // 64 KiB window but an 8-bit address only reaches its first 256 bytes.
++  // and the read data replicated across every byte lane. Note the consequence:
++  // the slot decodes a 64 KiB window but an 8-bit address only reaches its
++  // first 256 bytes.
++  //
++  // LOCAL INTEGRATION PATCH (not upstream): read data is replicated across all
++  // DATA_WIDTH/EXT_DATA_WIDTH byte lanes rather than zero-extended into the
++  // low lane. picorv32 byte-extracts a load from HRDATA[8*addr[1:0] +: 8]
++  // (its addressed lane), so a low-lane-only value makes every non-word-
++  // aligned lbu from this window read 0 -- which breaks reading Trouper's
++  // byte-packed Z_kl / Z_kk / N_ACC registers. Replication (the same trick
++  // picorv32 uses on its own store path, mem_la_wdata = {4{rs2[7:0]}}) makes
++  // the lane select land on the byte for any address. See
++  // lora-mimo/integration/planning/grp-ext-periph-byte-lane.md.
+   //
+   // ext_periph_HSEL and ext_periph_HREADYIN have nowhere to go until the
+   // bridge above exists - an external slave cannot tell it is selected
+@@ -594,7 +605,7 @@ logic [3:0] mux_qspi_sio_oe;  // internal signal for QSPI data output enable
+   assign ext_HTRANS    = ext_periph_HTRANS;
+   assign ext_HWDATA    = ext_periph_HWDATA[EXT_DATA_WIDTH-1:0];
+   assign ext_HWRITE    = ext_periph_HWRITE;
+-  assign ext_periph_HRDATA    = {{(DATA_WIDTH-EXT_DATA_WIDTH){1'b0}}, ext_HRDATA};
++  assign ext_periph_HRDATA    = {(DATA_WIDTH/EXT_DATA_WIDTH){ext_HRDATA}};
+   assign ext_periph_HREADYOUT = ext_HREADY;
+   assign ext_periph_HRESP     = ext_HRESP;
+ 

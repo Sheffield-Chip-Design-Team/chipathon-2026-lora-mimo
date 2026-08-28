@@ -12,16 +12,19 @@
 // port -- an oracle that shares none of the AHB/GRP path.
 //
 //   T1  MIMO_CTRL write (single ungated GRP write).
-//   T2  W shadow bank 0x30..0x3F written 0xB0..0xBF -- GRP writes at every
-//       byte lane (picorv32 replicates the store byte across all 4 AHB lanes).
-//   T3  GRP read alignment: an aligned byte read returns the register, an
-//       unaligned byte read returns 0. This is a real limitation of Grouper's
-//       8-bit ext-periph port, not a bug in the bridge -- periph_ss
-//       zero-extends ext_HRDATA into HRDATA[7:0] while picorv32 byte-extracts
-//       a load from HRDATA[8*addr[1:0] +: 8]. Grouper firmware can only read
-//       GRP registers at word-aligned byte offsets; Trouper's byte-packed
-//       Z_kl / Z_kk / N_ACC windows are not fully readable this way.
-//       See integration/planning/grp-ext-periph-byte-lane.md.
+//   T2  W shadow bank 0x33..0x3F written 0xB3..0xBF -- GRP writes at every
+//       addr[1:0] (picorv32 replicates the store byte across all 4 AHB lanes).
+//   T3a GRP single-byte read: aligned (0x08) and non-word-aligned (0x09) both
+//       return the register. The unaligned case works because periph_ss now
+//       replicates ext read data across all byte lanes instead of zero-
+//       extending into lane 0 -- picorv32 byte-extracts a load from
+//       HRDATA[8*addr[1:0] +: 8], so a lane-0-only value made every unaligned
+//       lbu read 0. Grouper local integration patch; see
+//       integration/planning/grp-ext-periph-byte-lane.md.
+//   T3b Multi-byte field reconstruction: the CPU byte-copies Trouper's Z_01_I
+//       readback (0x40..0x42, force-loaded here) into W shadow 0x30..0x32 --
+//       the Trouper-estimates -> Grouper -> Trouper-CSR flow with unaligned
+//       GRP reads and writes on the real path.
 //
 // This is the first *simulation* of grouper's local ahb_conn_buff CPU->periph
 // pipeline patch (digital_ss.sv: "Lint-clean; NOT simulated"), of the
@@ -209,9 +212,9 @@ module tb_chip_top;
         repeat (20) @(posedge hclk);
         hresetn = 1'b1;
 
-        // Let the CPU run T1 (1 write), T2 (16 writes), T3 (2 reads + 2 writes).
-        // Each GRP access blocks on HREADY for the full ahb_conn_buff + bridge
-        // CDC round trip; 8000 HCLK is many times the worst case.
+        // Let the CPU run T1 (1 write), T2 (13 writes), T3a (2 rd + 2 wr),
+        // T3b (3 rd + 3 wr). Each GRP access blocks on HREADY for the full
+        // ahb_conn_buff + bridge CDC round trip; 8000 HCLK >> worst case.
         repeat (8000) @(posedge hclk);
 
         // Oracle sanity: SPI path itself works, independent of the AHB path.
@@ -227,39 +230,45 @@ module tb_chip_top;
         spi_read(ADDR_MIMO, rd);
         check("T1  MIMO_CTRL  <- CPU GRP write", rd, 8'h31);
 
-        // ---- T2: W shadow bank, every byte lane -------------------
-        // Inline (not check()): $sformatf into check()'s packed-vector arg
-        // comes through blank under Verilator, so summarise the 16 in one line.
+        // ---- T2 + T3b: read W shadow bank 0x30..0x3F once ---------
+        // 0x30..0x32 = T3b (Z reconstruction), 0x33..0x3F = T2 (write lanes).
+        // Inline loop: $sformatf into check()'s packed-vector arg comes through
+        // blank under Verilator, so per-byte failures are $display'd directly.
         spi_read_burst(ADDR_W_BASE, 16);
-        begin : t2
+        begin : t2t3b
             integer bad;
+            reg [7:0] exp;
             bad = 0;
-            for (i = 0; i < 16; i = i + 1)
-                if (burst[i] !== 8'hB0 + i[7:0]) begin
-                    $display("FAIL  T2  W[0x%02h]  got 0x%02h expected 0x%02h",
-                             8'h30 + i, burst[i], 8'hB0 + i[7:0]);
+            for (i = 0; i < 16; i = i + 1) begin
+                exp = (i < 3) ? (8'h11 + 8'h11 * i[7:0])   // 0x11,0x22,0x33
+                              : (8'hB0 + i[7:0]);            // 0xB3..0xBF
+                if (burst[i] !== exp) begin
+                    $display("FAIL  W[0x%02h]  got 0x%02h expected 0x%02h",
+                             8'h30 + i, burst[i], exp);
                     bad = bad + 1;
                 end
-            if (bad == 0)
-                $display("pass  T2  W[0x30..0x3F] <- CPU GRP write, all 16 byte lanes  (0xB0..0xBF)");
+            end
+            if (bad == 0) begin
+                $display("pass  T3b W[0x30..0x32] = Z_01_I bytes copied by CPU  (0x11 0x22 0x33)");
+                $display("pass  T2  W[0x33..0x3F] <- CPU GRP write, byte lanes 3/0/1/2..  (0xB3..0xBF)");
+            end
             errors = errors + bad;
         end
 
-        // ---- T3: GRP read alignment ------------------------------
-        // Ground truth for the forced Z pattern (SPI peek path, all lanes).
+        // ---- T3a: single-byte GRP read, aligned + unaligned ------
+        // Ground truth for the forced Z pattern (SPI peek path).
         spi_read(ADDR_Z_BASE + 7'h00, rd); check("T3  Z[0x40] forced (SPI ground truth)", rd, 8'h11);
         spi_read(ADDR_Z_BASE + 7'h01, rd); check("T3  Z[0x41] forced (SPI ground truth)", rd, 8'h22);
+        spi_read(ADDR_Z_BASE + 7'h02, rd); check("T3  Z[0x42] forced (SPI ground truth)", rd, 8'h33);
 
         // CPU read results parked in SC_THR scratch by the firmware.
         spi_read(ADDR_SCTHR_H, rd);
-        check("T3  CPU aligned GRP read (lbu 0x08 -> 0x0C)", rd, 8'h31);
+        check("T3a CPU aligned   GRP read  (lbu 0x08 -> 0x0C)", rd, 8'h31);
         spi_read(ADDR_SCTHR_L, rd);
-        check("T3  CPU unaligned GRP read returns 0 (lbu 0x09 -> 0x0D)", rd, 8'h00);
-        $display("     ^ expected: Grouper 8-bit ext-periph port carries byte lane 0 only");
-        $display("       (periph_ss HRDATA[7:0]) -- see grp-ext-periph-byte-lane.md");
+        check("T3a CPU unaligned GRP read  (lbu 0x09 -> 0x0D)", rd, 8'h07);
 
         if (errors == 0)
-            $display("\nTB PASS - T1 write, T2 all-lane writes, T3 read-alignment all as specified");
+            $display("\nTB PASS - T1 write, T2 write lanes, T3a/T3b unaligned GRP read+write via CPU");
         else
             $display("\nTB FAIL - %0d error(s)", errors);
         $finish;
