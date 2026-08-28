@@ -8,12 +8,21 @@
 #   lora-mimo/integration/scripts/run_tb_chip_top.sh              # FW=smoke
 #   FW=weightgen LOAD=backdoor  .../run_tb_chip_top.sh
 #   FW=weightgen LOAD=uart      .../run_tb_chip_top.sh
+#   STIM=iq                     .../run_tb_chip_top.sh            # T5 real IQ
 #
 #   FW    smoke (default) | weightgen
 #         smoke     -- hand-assembled program in ROM (T1..T3, GRP plumbing)
 #         weightgen -- Trouper firmware/picorv32 MRC weight compute on the real
 #                      Grouper CPU, forced-Z, checked vs eigvec_fw golden (T4)
 #   LOAD  uart (default) | backdoor   -- weightgen only, how the RAM image loads
+#   STIM  forced (default) | iq
+#         iq  -- drive a real sigma-delta IQ capture through Trouper's DSP chain
+#                so training makes Z for real; the weight-gen fw then reads it
+#                over the bridge. Implies FW=weightgen, LOAD=backdoor. Post-check
+#                fw/check_weightgen_iq.py. Knobs: IQ_FILE IQ_SR IQ_SF IQ_BW
+#                IQ_START IQ_NSAMP IQ_SNRDB IQ_GAINS IQ_PHASES IQ_SEED IQ_CHAN.
+#                (IQ_GAINS/IQ_PHASES default to a distinct 4-branch channel;
+#                 equal values make Z degenerate -- a trivial eigenvector.)
 #
 # Requires the grouper + trouper submodules under lora-mimo/integration/ip/ and
 # the grouper local integration patch (auto-applied below if absent).
@@ -32,7 +41,14 @@ DOCKER_IMAGE="${DOCKER_IMAGE:-hpretl/iic-osic-tools:chipathon26}"
 RUN_DIR="${RUN_DIR:-$INTEG/runs/tb_chip_top}"
 FW="${FW:-smoke}"
 LOAD="${LOAD:-uart}"
+STIM="${STIM:-forced}"
 
+case "$STIM" in
+    forced) ;;
+    iq)  FW=weightgen; LOAD=backdoor;   # T5: implies real firmware + RAM backdoor
+         echo "STIM=iq -> forcing FW=weightgen LOAD=backdoor" ;;
+    *)   echo "STIM must be forced|iq"; exit 1 ;;
+esac
 case "$FW" in smoke|weightgen) ;; *) echo "FW must be smoke|weightgen"; exit 1 ;; esac
 case "$LOAD" in uart|backdoor) ;; *) echo "LOAD must be uart|backdoor"; exit 1 ;; esac
 
@@ -61,6 +77,11 @@ docker run --rm \
     -v "$(dirname "$PICORV32_V")":/pico_dir:ro \
     -v "$RUN_DIR":/work \
     -e TB_DUMP="${TB_DUMP:-0}" -e FW="$FW" -e LOAD="$LOAD" -e PROBE="${PROBE:-0}" \
+    -e STIM="$STIM" \
+    -e IQ_FILE="${IQ_FILE:-}" -e IQ_SR="${IQ_SR:-}" -e IQ_SF="${IQ_SF:-}" \
+    -e IQ_BW="${IQ_BW:-}" -e IQ_START="${IQ_START:-}" -e IQ_NSAMP="${IQ_NSAMP:-}" \
+    -e IQ_SNRDB="${IQ_SNRDB:-}" -e IQ_GAINS="${IQ_GAINS:-}" -e IQ_SEED="${IQ_SEED:-}" \
+    -e IQ_CHAN="${IQ_CHAN:-}" -e IQ_PHASES="${IQ_PHASES:-}" \
     --entrypoint bash "$DOCKER_IMAGE" -lc '
 set -euo pipefail
 set -x
@@ -122,10 +143,20 @@ PY
     fi
 fi
 
+# (c) STIM=iq: real sigma-delta capture -> iq_stim.hex + iq_stim.cfg.vh
+IQDEFS=""
+IQSRC=""
+if [ "$STIM" = "iq" ]; then
+    TROUPER_ROOT=/trouper OUT=/work python3 "$FWDIR/iq_stimulus.py"
+    IQDEFS="-DIQ"
+    IQSRC=/trouper/cocotb/hdl/psram_model.v
+fi
+
 # ---- verilate + build ------------------------------------------------
 TRACE=""
 [ "${TB_DUMP:-0}" = "1" ] && TRACE="--trace -DDUMP"
 [ "${PROBE:-0}" = "1" ] && TRACE="$TRACE -DPROBE"
+[ -n "$IQDEFS" ] && TRACE="$TRACE $IQDEFS"
 
 verilator --binary --timing -j 0 -Wno-fatal --timescale 1ns/1ps -I/work \
     -Wno-UNOPTFLAT -Wno-WIDTH -Wno-CASEINCOMPLETE -Wno-UNUSEDSIGNAL \
@@ -145,9 +176,16 @@ verilator --binary --timing -j 0 -Wno-fatal --timescale 1ns/1ps -I/work \
     "$G/rtl/digital_ss.sv" "$G/rtl/grouper_soc_top.sv" \
     $T/decimator/*.v $T/frontend/*.v $T/combiner/*.v $T/remod/*.v $T/control/*.v \
     "$T/top/trouper_top.v" \
+    $IQSRC \
     "$I/rtl/ahb_to_grp_bridge.v" "$I/rtl/chip_top.v" "$I/tb/tb_chip_top.v"
 
 # ---- run --------------------------------------------------------------
 ./obj_dir/tb_chip_top +FW=$FW +LOAD=$LOAD
+
+# ---- STIM=iq: bit-exact post-check against the reference model --------
+if [ "$STIM" = "iq" ]; then
+    echo "--- check_weightgen_iq.py ---"
+    DESIGN_ROOT=/trouper python3 "$FWDIR/check_weightgen_iq.py" /work/iq_result.txt
+fi
 '
-echo "run_tb_chip_top.sh: FW=$FW LOAD=$LOAD -- artifacts in $RUN_DIR"
+echo "run_tb_chip_top.sh: FW=$FW LOAD=$LOAD STIM=$STIM -- artifacts in $RUN_DIR"

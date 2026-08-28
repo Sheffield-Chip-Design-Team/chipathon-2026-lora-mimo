@@ -35,6 +35,16 @@
 //   +LOAD=backdoor  $readmemh the per-lane image straight into ram_ss's four
 //                   sram1024x8 models and force bank_switch=1. Fast; skips boot.
 //
+// Built with -DIQ (runner: STIM=iq) this becomes T5: a real sigma-delta IQ
+// capture (fw/iq_stimulus.py, reusing Trouper's cocotb iq_capture front-end) is
+// clocked onto the radio pads, a psram_model is wired onto chip_top's PSRAM
+// nets, the tb SPI-provisions Trouper (SF/BW/SC_THR/RX_HOLD/PSRAM) with the CPU
+// held in reset, then releases the CPU so the real weight-gen firmware reads a
+// *measured* Z over the bridge and writes weights. The measured Z + N_ACC + the
+// firmware's W are dumped to iq_result.txt; fw/check_weightgen_iq.py does the
+// bit-exact compare against eigvec_fw.compute_eigvec_fw(measured Z). Implies
+// FW=weightgen, LOAD=backdoor. See planning/tb-chip-top.md.
+//
 // Simulator: Verilator 5, --binary --timing. Run: scripts/run_tb_chip_top.sh.
 
 `timescale 1ns/1ps
@@ -50,9 +60,15 @@ module tb_chip_top;
 
     reg hresetn = 1'b0;
 
-    // ---- Trouper radio pads: unused, tied idle --------------------------
+    // ---- Trouper radio pads ------------------------------------------------
+`ifdef IQ
+    // STIM=iq: driven from the sigma-delta capture playback (see the IQ block).
+    reg iq_i0 = 1'b0, iq_i1 = 1'b0, iq_i2 = 1'b0, iq_i3 = 1'b0;
+    reg iq_q0 = 1'b0, iq_q1 = 1'b0, iq_q2 = 1'b0, iq_q3 = 1'b0;
+`else
     wire iq_i0 = 1'b0, iq_i1 = 1'b0, iq_i2 = 1'b0, iq_i3 = 1'b0;
     wire iq_q0 = 1'b0, iq_q1 = 1'b0, iq_q2 = 1'b0, iq_q3 = 1'b0;
+`endif
 
     // ---- Grouper pads --------------------------------------------------
     wire        uart_tx;
@@ -111,6 +127,55 @@ module tb_chip_top;
     `define RAM2 dut.u_grouper.u_grouper_soc_dig_ss.u_ram_ss.gen_macro_ram.gen_sram[2].u_wrapper.u_sram_macro.mem
     `define RAM3 dut.u_grouper.u_grouper_soc_dig_ss.u_ram_ss.gen_macro_ram.gen_sram[3].u_wrapper.u_sram_macro.mem
     `define BANKSW dut.u_grouper.u_grouper_soc_dig_ss.u_cpu_ss.bank_switch
+    `define CPU_RSTN dut.u_grouper.u_grouper_soc_dig_ss.u_cpu_ss.cpu_rst_n
+
+    // =====================================================================
+    // STIM=iq: real sigma-delta capture playback + PSRAM model (T5)
+    // =====================================================================
+`ifdef IQ
+    `include "iq_stim.cfg.vh"     // `define IQ_SF / IQ_BWSEL / IQ_NSAMP  (generated)
+    localparam        IQ_MAX  = 1 << 22;      // must match fw/iq_stimulus.py
+    localparam [7:0]  IQ_SF   = `IQ_SF;
+    localparam [7:0]  IQ_BWSEL= `IQ_BWSEL;
+    localparam integer IQ_NSAMP = `IQ_NSAMP;
+
+    reg  [7:0] iq_stim [0:IQ_MAX-1];          // one packed nibble-pair per IQ_CLK
+    integer    iq_ptr = 0;
+    reg        iq_run = 1'b0;
+
+    always @(posedge iq_clk) if (iq_run) begin
+        {iq_q3, iq_q2, iq_q1, iq_q0} <= iq_stim[iq_ptr][7:4];
+        {iq_i3, iq_i2, iq_i1, iq_i0} <= iq_stim[iq_ptr][3:0];
+        if (iq_ptr < IQ_NSAMP - 1) iq_ptr <= iq_ptr + 1;
+    end
+
+    // chip_top is a P&R-only model: PSRAM_SIO_* are plain outputs with no pad
+    // OE, and it self-loops psram_sio_in <= PSRAM_SIO (== psram_sio_out). The
+    // real DSP path needs a working PSRAM (delay line + INIT_DONE), so attach
+    // Trouper's own behavioural model onto the internal nets and override the
+    // self-loop: a read (controller tri-stated, oe=0) sees the model.
+    wire [3:0] ps_oe  = {dut.psram_sio_oe_3,  dut.psram_sio_oe_2,
+                         dut.psram_sio_oe_1,  dut.psram_sio_oe_0};
+    wire [3:0] ps_out = {dut.psram_sio_out_3, dut.psram_sio_out_2,
+                         dut.psram_sio_out_1, dut.psram_sio_out_0};
+    wire [3:0] ps_model_in;
+
+    psram_model #(.ADDR_BITS(16), .RD_LAUNCH_SKIP(3)) u_psram (
+        .clk_32m (iq_clk),
+        .rst_n   (hresetn),
+        .ce_n    (psram_ce_n),
+        .sio_out (ps_out),
+        .sio_oe  (ps_oe),
+        .sio_in  (ps_model_in)
+    );
+
+    initial begin
+        force dut.psram_sio_in_0 = ps_oe[0] ? ps_out[0] : ps_model_in[0];
+        force dut.psram_sio_in_1 = ps_oe[1] ? ps_out[1] : ps_model_in[1];
+        force dut.psram_sio_in_2 = ps_oe[2] ? ps_out[2] : ps_model_in[2];
+        force dut.psram_sio_in_3 = ps_oe[3] ? ps_out[3] : ps_model_in[3];
+    end
+`endif
 
     // =====================================================================
     // Forced Z (smoke: a recognisable pattern; weightgen: from the stimulus)
@@ -155,6 +220,16 @@ module tb_chip_top;
             spi_start;
             spi_byte({1'b1, a}, dump);
             spi_byte(8'h00, d);
+            spi_stop;
+        end
+    endtask
+
+    task spi_write(input [6:0] a, input [7:0] d);
+        reg [7:0] dump;
+        begin
+            spi_start;
+            spi_byte({1'b0, a}, dump);
+            spi_byte(d, dump);
             spi_stop;
         end
     endtask
@@ -301,8 +376,17 @@ module tb_chip_top;
         end
 
         if (fw_mode == "weightgen") begin
+`ifdef IQ
+            // T5: Z is measured from real samples, not forced. Hold the Grouper
+            // CPU in reset from the outset so it cannot run asic_cfg_commit()
+            // (which releases RX_HOLD over GRP) before run_weightgen_iq has
+            // SPI-provisioned SF/BW -- those writes are RX_HOLD-gated.
+            force `CPU_RSTN = 1'b0;
+            $readmemh("iq_stim.hex", iq_stim);
+`else
             force_weightgen_z;
             $readmemh("weightgen_golden.hex", golden);
+`endif
             if (load_mode == "backdoor") load_backdoor;
             // ROM keeps whatever code.hex holds (the bootloader for uart mode;
             // unused for backdoor). Load it so a bad CWD fails loudly.
@@ -320,8 +404,12 @@ module tb_chip_top;
         repeat (20) @(posedge hclk);
         hresetn = 1'b1;
 
+`ifdef IQ
+        run_weightgen_iq;
+`else
         if (fw_mode == "weightgen") run_weightgen;
         else                        run_smoke;
+`endif
 
         if (errors == 0) $display("\nTB PASS (%0s / %0s)", fw_mode, load_mode);
         else             $display("\nTB FAIL - %0d error(s) (%0s / %0s)", errors, fw_mode, load_mode);
@@ -411,8 +499,127 @@ module tb_chip_top;
         end
     endtask
 
+    // ---- weightgen + real IQ (T5) ---------------------------------------
+    // Drive a real sigma-delta capture through Trouper's DSP chain so training
+    // produces Z for real, then let the real weight-gen firmware read that Z
+    // over the AHB->GRP bridge and write MRC weights. The bit-exact oracle is
+    // fw/check_weightgen_iq.py (runs post-sim on the dumped Z + W).
+`ifdef IQ
+    task run_weightgen_iq;
+        begin : wgiq
+            integer bad, guard, k;
+            reg [7:0] zb  [0:47];             // Z region 0x40..0x6F
+            reg [7:0] wb  [0:15];             // W shadow 0x30..0x3F
+            reg [7:0] nacc_hi, nacc_mid, nacc_lo;
+            integer fd;
+
+            // CPU is already held in reset (forced in the initial block). If
+            // uart-loading, the bootloader needs it running -- not supported
+            // for IQ; the runner pins LOAD=backdoor.
+            if (load_mode == "uart")
+                $display("WARN  LOAD=uart not supported with STIM=iq; using backdoor RAM image");
+
+            repeat (50) @(posedge iq_clk);
+
+            // ---- host config over SPI (CPU held: no GRP/SPI read-port race).
+            // Mirrors trouper test_capture_playback: SF, BW, SC_THR=0x0100,
+            // SC_HITS_REQ=0, release RX_HOLD, enable PSRAM.
+            spi_read(7'h00, rd);                       // settle
+            spi_read(7'h09, rd);
+            spi_write(7'h09, IQ_SF);                   // SF_CFG
+            spi_write(7'h0A, {7'h0, IQ_BWSEL[0]});    // BW_CFG[0] bw_sel
+            spi_read(7'h0A, rd);
+            if ((rd & 8'h01) !== IQ_BWSEL[0])
+                $display("WARN  BW_CFG readback 0x%02h (wanted bit0=%b)", rd, IQ_BWSEL[0]);
+            spi_write(7'h0C, 8'h01);                   // SC_THR[15:8]
+            spi_write(7'h0D, 8'h00);                   // SC_THR[7:0]  -> 0x0100
+            spi_write(7'h0E, 8'h00);                   // SC_HITS_REQ = 0
+            spi_write(7'h1A, 8'h00);                   // release RX_HOLD
+            spi_write(7'h70, 8'h01);                   // PSRAM enable
+
+            // ---- poll PSRAM INIT_DONE (0x71[3]) -----------------------------
+            guard = 0; rd = 8'h00;
+            while (!(rd & 8'h08) && guard < 4000) begin
+                repeat (200) @(posedge iq_clk);
+                spi_read(7'h71, rd);
+                guard = guard + 1;
+            end
+            if (!(rd & 8'h08)) begin
+                $display("FAIL  PSRAM INIT_DONE never set (0x71=0x%02h)", rd);
+                errors = errors + 1;
+                disable wgiq;
+            end
+            $display("iq: PSRAM init OK (%0d polls)", guard);
+
+            // ---- start playback, release the CPU into the weight-gen fw -----
+            iq_ptr = 0;
+            iq_run = 1'b1;
+            release `CPU_RSTN;
+            $display("iq: playback started (%0d samples), weight-gen fw running", IQ_NSAMP);
+
+            // ---- wait for a REAL training_done from the DSP chain ----------
+            guard = 0;
+            while (dut.u_trouper.training_done !== 1'b1 && guard < 6_000_000) begin
+                @(posedge iq_clk);
+                guard = guard + 1;
+            end
+            if (dut.u_trouper.training_done !== 1'b1) begin
+                $display("FAIL  no training_done after %0d iq_clk (sc_lock=%b) -- widen IQ_NSAMP / move IQ_START",
+                         guard, dut.u_trouper.sc_lock);
+                errors = errors + 1;
+                disable wgiq;
+            end
+            $display("iq: training_done at iq_clk +%0d  (sc_lock=%b)",
+                     guard, dut.u_trouper.sc_lock);
+
+            // ---- firmware compute budget (same as T4) ---------------------
+            repeat (400000) @(posedge hclk);
+
+            // ---- quiesce CPU, SPI-oracle dump measured Z + n_acc + fw W ----
+            force `CPU_RSTN = 1'b0;
+            repeat (200) @(posedge iq_clk);
+
+            spi_read_burst(7'h30, 16);
+            for (k = 0; k < 16; k = k + 1) wb[k] = burst[k];
+            spi_read_burst(7'h40, 16);
+            for (k = 0; k < 16; k = k + 1) zb[k] = burst[k];
+            spi_read_burst(7'h50, 16);
+            for (k = 0; k < 16; k = k + 1) zb[16 + k] = burst[k];
+            spi_read_burst(7'h60, 16);
+            for (k = 0; k < 16; k = k + 1) zb[32 + k] = burst[k];
+            spi_read(7'h21, nacc_hi);
+            spi_read(7'h22, nacc_mid);
+            spi_read(7'h23, nacc_lo);
+
+            fd = $fopen("iq_result.txt", "w");
+            $fwrite(fd, "NACC %02x %02x %02x\n", nacc_hi, nacc_mid, nacc_lo);
+            $fwrite(fd, "Z");
+            for (k = 0; k < 48; k = k + 1) $fwrite(fd, " %02x", zb[k]);
+            $fwrite(fd, "\nW");
+            for (k = 0; k < 16; k = k + 1) $fwrite(fd, " %02x", wb[k]);
+            $fwrite(fd, "\n");
+            $fclose(fd);
+            $display("iq: wrote iq_result.txt  n_acc=0x%02h%02h%02h",
+                     nacc_hi & 8'h03, nacc_mid, nacc_lo);
+
+            // ---- tb-side sanity; bit-exact match is check_weightgen_iq.py --
+            bad = 0;
+            for (k = 0; k < 16; k = k + 1) if (wb[k] !== 8'h00) bad = bad + 1;
+            if (bad == 0) begin
+                $display("FAIL  T5 W shadow all-zero -- firmware wrote no weights");
+                errors = errors + 1;
+            end else
+                $display("pass  T5 firmware wrote W shadow (%0d/16 bytes nonzero); check_weightgen_iq.py does the bit-exact compare", bad);
+        end
+    endtask
+`endif
+
     initial begin
-        #120_000_000;                      // 120 ms: weightgen compute + UART load
+`ifdef IQ
+        #900_000_000;                      // capture playback + compute
+`else
+        #120_000_000;                      // weightgen compute + UART load
+`endif
         $display("TB FAIL - timeout (no $finish reached)");
         $finish;
     end
