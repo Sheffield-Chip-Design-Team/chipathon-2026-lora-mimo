@@ -23,9 +23,17 @@
 # needed a small local patch to grouper_soc_top.sv itself -- see that file's
 # header -- to expose its "External AHB Master Interface" instead of tying
 # it off dead; that's the port chip_top.v bridges to Trouper on.
-# MACRO_RAM is deliberately NOT set here (unlike config_landscape_2235.yaml),
-# so ram_ss falls back to its behavioural array path instead of needing the
-# real SRAM macro's GDS/LEF for this fast synth-only check.
+#
+# 2026-08-27: grouper submodule moved from timn/pd-landscape-floorplan to
+# dev. dev restructured the memory path -- ROM/RAM are now rom_ss/ram_ss
+# wired straight to the CPU inside digital_ss (off the AHB bus), the old
+# memory/ahb_rom.sv + memory/ahb_ram.sv wrappers are gone, and
+# ahb_interconnect_ss.sv is renamed interconnect_ss.sv. ram_ss has no
+# MACRO_RAM define any more -- it gates the macro on a USE_MACRO_RAM
+# *parameter* that defaults to 1 and is not overridden, so ram_ss ALWAYS
+# pulls the sram1024x8m8wm1 wrapper. For this synth-only check that macro is
+# supplied as a plain (* blackbox *) stub (__blackbox_pp.v) rather than the
+# full GDS/LEF the floorplan config needs.
 
 DESIGN_NAME: chip_top
 
@@ -40,7 +48,6 @@ VERILOG_FILES:
 - dir::../ip/grouper/hw/rtl/common/small_sync_fifo.sv
 - dir::../ip/grouper/hw/rtl/common/sync.sv
 - dir::../../ip/picorv32/picorv32.v
-- dir::../ip/grouper/hw/rtl/gpio/gpio_ctrl_pkg.sv
 - dir::../ip/grouper/hw/rtl/gpio/ahb_gpio_ctrl.sv
 - dir::../ip/grouper/hw/rtl/spi_s/ahb_spi_s.sv
 - dir::../ip/grouper/hw/rtl/uart/uart_clk_div.sv
@@ -51,10 +58,11 @@ VERILOG_FILES:
 - dir::../ip/grouper/hw/rtl/interconnect/ahb_debug.sv
 - dir::../ip/grouper/hw/rtl/interconnect/ahb_conn_buff.sv
 - dir::../ip/grouper/hw/rtl/interconnect/ahb_stub_slave.sv
-- dir::../ip/grouper/hw/rtl/ahb_interconnect_ss.sv
-- dir::../ip/grouper/hw/rtl/memory/ahb_rom.sv
-- dir::../ip/grouper/hw/rtl/memory/ahb_ram.sv
-- dir::../ip/grouper/hw/rtl/memory/ram_ss.sv
+- dir::../ip/grouper/hw/rtl/interconnect_ss.sv
+- dir::../ip/grouper/hw/rtl/rom_ss.sv
+- dir::../ip/grouper/hw/rtl/ram_ss.sv
+- dir::../ip/grouper/hw/pd/wrappers/gf180mcu_ocd_sram_1024x8m8wm1_wrapper.sv
+- dir::../ip/grouper/ip/gf180mcu_ocd_ip_sram/cells/gf180mcu_ocd_ip_sram__sram1024x8m8wm1/gf180mcu_ocd_ip_sram__sram1024x8m8wm1__blackbox_pp.v
 - dir::../ip/grouper/hw/rtl/io_ss.sv
 - dir::../ip/grouper/hw/rtl/cpu_ss.sv
 - dir::../ip/grouper/hw/rtl/periph_ss.sv
@@ -76,18 +84,20 @@ VERILOG_FILES:
 
 USE_SLANG: true
 
-# Without ROM_INIT_CONST, ahb_rom.sv falls back to a sim-only `$readmemh`, which
+# Without ROM_INIT_CONST, rom_ss.sv falls back to a sim-only `$readmemh`, which
 # the slang synth frontend rejects as an unsupported system task (confirmed
 # 2026-08-22, job 4664). ROM_INIT_CONST switches it to the ASIC-synthesis path
-# (`` `include `PROG_FILE_VMEM ``), matching Grouper's own config.yaml convention.
-# Reuses the same firmware image the original AHB integration testbench used.
+# (`` `include "code.vmem" ``), matching Grouper's own config.yaml convention.
+# On dev, rom_ss.sv hardcodes `include "code.vmem" (no PROG_FILE_VMEM indirection
+# any more), so INCLUDE_DIRS just has to supply that file -- point it at
+# Grouper's own sw/boot the same way Grouper's librelane/classic/config.yaml
+# does. The old integration/fw/code_grouper_trouper.vmem path is dead.
 # Deliberately NOT using DRY_RUN (Grouper's own 64B-boot-ROM/stubbed-SPI-slave
 # variant) -- this is meant to be the real design, not the cut-down PD trial.
 VERILOG_DEFINES:
 - ROM_INIT_CONST
-- PROG_FILE_VMEM="code_grouper_trouper.vmem"
 VERILOG_INCLUDE_DIRS:
-- dir::../fw
+- dir::../ip/grouper/sw/boot
 
 # HCLK is tied to Trouper's IQ_CLK in chip_top.v (32 MHz) -- see that file's
 # shared-clock-domain assumption, not yet validated.

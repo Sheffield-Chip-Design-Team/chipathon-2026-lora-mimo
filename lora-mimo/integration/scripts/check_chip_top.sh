@@ -8,16 +8,24 @@
 # grouper_soc_top (whole SoC) instead of hand-picked submodules -- file list
 # below matches synth_only_chip_top.yaml's (Grouper's own full
 # librelane/classic/config.yaml list, minus its padframe wrapper).
+#
+# 2026-08-27: grouper submodule moved to dev -- memory path restructured
+# (rom_ss/ram_ss straight to CPU inside digital_ss, ahb_rom/ahb_ram gone,
+# ahb_interconnect_ss -> interconnect_ss), gpio_ctrl_pkg removed, SRAM
+# wrapper file renamed, and rom_ss.sv hardcodes `include "code.vmem" so the
+# include dir is Grouper's own sw/boot (PROG_FILE_VMEM is dead). The SRAM
+# macro comes in as a (* blackbox *) stub for this elaboration check.
 set -euo pipefail
 cd /foss/designs/integration
 
 GROUPER=ip/grouper/hw
+GROUPER_SRAM=ip/grouper/ip/gf180mcu_ocd_ip_sram/cells/gf180mcu_ocd_ip_sram__sram1024x8m8wm1
 TROUPER=ip/trouper/src
 OUT=${RUN_DIR:-/foss/runs}   # /foss/designs is read-only inside the container
 
 iverilog -g2012 \
     -o "$OUT/chip_top_check.vvp" \
-    -DROM_INIT_CONST -DPROG_FILE_VMEM=\"code_grouper_trouper.vmem\" -I fw \
+    -DROM_INIT_CONST -I ip/grouper/sw/boot \
     $GROUPER/rtl/ahb3lite/ahb3lite_pkg.sv \
     $GROUPER/rtl/common/clk_div.sv \
     $GROUPER/rtl/common/clk_gate.sv \
@@ -28,7 +36,6 @@ iverilog -g2012 \
     $GROUPER/rtl/common/small_sync_fifo.sv \
     $GROUPER/rtl/common/sync.sv \
     ../ip/picorv32/picorv32.v \
-    $GROUPER/rtl/gpio/gpio_ctrl_pkg.sv \
     $GROUPER/rtl/gpio/ahb_gpio_ctrl.sv \
     $GROUPER/rtl/spi_s/ahb_spi_s.sv \
     $GROUPER/rtl/uart/uart_clk_div.sv \
@@ -39,11 +46,11 @@ iverilog -g2012 \
     $GROUPER/rtl/interconnect/ahb_debug.sv \
     $GROUPER/rtl/interconnect/ahb_conn_buff.sv \
     $GROUPER/rtl/interconnect/ahb_stub_slave.sv \
-    $GROUPER/rtl/ahb_interconnect_ss.sv \
-    $GROUPER/rtl/memory/ahb_rom.sv \
-    $GROUPER/rtl/memory/ahb_ram.sv \
-    $GROUPER/rtl/memory/ram_ss.sv \
-    $GROUPER/pd/wrappers/sram1024x8_wrapper.sv \
+    $GROUPER/rtl/interconnect_ss.sv \
+    $GROUPER/rtl/rom_ss.sv \
+    $GROUPER/rtl/ram_ss.sv \
+    $GROUPER/pd/wrappers/gf180mcu_ocd_sram_1024x8m8wm1_wrapper.sv \
+    $GROUPER_SRAM/gf180mcu_ocd_ip_sram__sram1024x8m8wm1__blackbox_pp.v \
     $GROUPER/rtl/io_ss.sv \
     $GROUPER/rtl/cpu_ss.sv \
     $GROUPER/rtl/periph_ss.sv \

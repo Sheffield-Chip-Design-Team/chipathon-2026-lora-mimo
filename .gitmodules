@@ -23,7 +23,7 @@
 [submodule "lora-mimo/integration/ip/grouper"]
 	path = lora-mimo/integration/ip/grouper
 	url = https://github.com/Sheffield-Chip-Design-Team/chipathon-2026-grouper.git
-	branch = timn/pd-landscape-floorplan
+	branch = dev
 [submodule "lora-mimo/integration/ip/trouper"]
 	path = lora-mimo/integration/ip/trouper
 	url = https://github.com/Sheffield-Chip-Design-Team/chipathon-2026-trouper.git

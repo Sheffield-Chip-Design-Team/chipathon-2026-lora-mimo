@@ -25,12 +25,38 @@ meta:
 # JSON-skeleton stage, YAML config keys are validated strictly):
 # Die/obstruction/pin-order geometry is settled and chip_top synthesizes
 # cleanly (job 4667, full grouper_soc_top+trouper_top+bridge rewrite).
-# io_placement_landscape.cfg has a temporary pin-side guard (real Trouper
-# pins on N/W, GRP_* bus + catch-all on S/E) so Grouper pins can't default
-# onto Trouper's side, but it is NOT a real pinout (Open Item #4, deferred).
-# Not yet run as a full floorplan/PnR flow -- only synthesis has been
-# verified so far, and PDN_CFG below is disabled (see its own note) until a
-# real pdn_cfg.tcl exists.
+#
+# Floorplan orientation -- read from what the flow actually executes, not the
+# earlier plan: Grouper is the NW L-shape (top-left quadrant + the strip west
+# of Obstruction B; its 4 SRAMs sit in this lobe -- see MACROS below),
+# Trouper is the SE square (bottom-right quadrant). Confirmed by the PDN
+# VSRC_LOC comments further down, which label the west sources "Grouper" and
+# the east sources "Trouper". So Grouper's board-facing edges are #N/#W and
+# Trouper's are #S/#E.
+# NOTE: an earlier revision of this header and of planning/grouper-trouper-
+# landscape-floorplan-2026-08.md had the two projects swapped (Trouper on
+# N/W) -- corrected 2026-08-27.
+#
+# io_placement_landscape.cfg -- rewritten 2026-08-27 to the first real
+# combined pinout: Trouper datapath on #S (radio-facing) and #E (PSRAM +
+# IRQ_OUT + power); Grouper's uart/gpio on #W and #N; the <=10 MHz host SPI
+# slave (HOST_CS/SPI_*) moved to #N's east end (off the crowded SE side,
+# tolerates the long route). One VSS/VDD pair per project on its own edge.
+# See that file's header for the per-side slot budget. One precondition
+# before a run: chip_top.v must expose Grouper's uart/gpio/power pads
+# (currently tied off). The SRAM row is left at job 5069's y=1695.67 -- the
+# #N Grouper nets route over it on M4/M5 (see MACROS). The GRP_* interconnect
+# is not chip pads -- it is internal, crossed by u_bridge in chip_top.v.
+# Full-flow status: job 5069 = previous Trouper-only pinout, clean DRC/LVS,
+# SS setup open (planning doc item 19). The 2026-08-27 combined pinout +
+# Grouper pads ran clean (DRC 0 / LVS 0 / hold clean) across an HCLK sweep
+# -- jobs 5132 (16 MHz), 5131 (25 MHz), 5133 (32 MHz). All MEET at nom_tt
+# (+9.8..+8.1 ns) and min_ff; SS setup fails at every point (-13.6 / -15.2
+# / -16.3 ns), bottleneck crossing from Trouper's IQ_CLK32 to Grouper's
+# CPU->SRAM decode cone between 16 and 25 MHz. The pinout/pads are
+# timing-neutral vs 5069 (5132 -13.56 vs -14.32 ns SS). 25 MHz judged
+# feasible for the test chip -- see planning doc item 20 and
+# integration/planning/Open Risks.md #4.
 
 DESIGN_NAME: chip_top
 VERILOG_FILES:
@@ -44,7 +70,6 @@ VERILOG_FILES:
 - dir::../ip/grouper/hw/rtl/common/small_sync_fifo.sv
 - dir::../ip/grouper/hw/rtl/common/sync.sv
 - dir::../../ip/picorv32/picorv32.v
-- dir::../ip/grouper/hw/rtl/gpio/gpio_ctrl_pkg.sv
 - dir::../ip/grouper/hw/rtl/gpio/ahb_gpio_ctrl.sv
 - dir::../ip/grouper/hw/rtl/spi_s/ahb_spi_s.sv
 - dir::../ip/grouper/hw/rtl/uart/uart_clk_div.sv
@@ -55,11 +80,10 @@ VERILOG_FILES:
 - dir::../ip/grouper/hw/rtl/interconnect/ahb_debug.sv
 - dir::../ip/grouper/hw/rtl/interconnect/ahb_conn_buff.sv
 - dir::../ip/grouper/hw/rtl/interconnect/ahb_stub_slave.sv
-- dir::../ip/grouper/hw/rtl/ahb_interconnect_ss.sv
-- dir::../ip/grouper/hw/rtl/memory/ahb_rom.sv
-- dir::../ip/grouper/hw/rtl/memory/ahb_ram.sv
-- dir::../ip/grouper/hw/rtl/memory/ram_ss.sv
-- dir::../ip/grouper/hw/pd/wrappers/sram1024x8_wrapper.sv
+- dir::../ip/grouper/hw/rtl/interconnect_ss.sv
+- dir::../ip/grouper/hw/rtl/rom_ss.sv
+- dir::../ip/grouper/hw/rtl/ram_ss.sv
+- dir::../ip/grouper/hw/pd/wrappers/gf180mcu_ocd_sram_1024x8m8wm1_wrapper.sv
 - dir::../ip/grouper/hw/rtl/io_ss.sv
 - dir::../ip/grouper/hw/rtl/cpu_ss.sv
 - dir::../ip/grouper/hw/rtl/periph_ss.sv
@@ -81,21 +105,22 @@ VERILOG_FILES:
 
 USE_SLANG: true
 
-# See synth_only_chip_top.yaml's header: without ROM_INIT_CONST, ahb_rom.sv
+# See synth_only_chip_top.yaml's header: without ROM_INIT_CONST, rom_ss.sv
 # falls back to a sim-only `$readmemh`, which the slang synth frontend
-# rejects. This switches it to the ASIC-synthesis `` `include `` path.
-# MACRO_RAM switches ahb_ram.sv/ram_ss.sv to the real sram1024x8m8wm1 macro
-# path (via sram1024x8_wrapper) instead of a behavioural array -- needed for
-# the MACROS placement block below to apply to anything real. Unlike
-# synth_only_chip_top.yaml (which deliberately omits this to avoid needing
-# the macro's GDS/LEF for a fast synth-only check), this is the real
-# floorplan config, so it needs the real macro.
+# rejects. This switches it to the ASIC-synthesis `` `include "code.vmem" ``
+# path; INCLUDE_DIRS points at Grouper's own sw/boot to supply that file
+# (dev's rom_ss.sv hardcodes the filename -- no PROG_FILE_VMEM any more).
+#
+# 2026-08-27: dev's ram_ss.sv has NO MACRO_RAM define -- it gates the real
+# sram1024x8m8wm1 macro (via the sram1024x8_wrapper module, now in
+# gf180mcu_ocd_sram_1024x8m8wm1_wrapper.sv) on a USE_MACRO_RAM *parameter*
+# that defaults to 1 and is not overridden anywhere up the hierarchy, so the
+# macro path is always taken. The MACROS placement block below therefore
+# still applies; the former `- MACRO_RAM` define is dropped as a dead no-op.
 VERILOG_DEFINES:
 - ROM_INIT_CONST
-- PROG_FILE_VMEM="code_grouper_trouper.vmem"
-- MACRO_RAM
 VERILOG_INCLUDE_DIRS:
-- dir::../fw
+- dir::../ip/grouper/sw/boot
 
 # HCLK is tied to Trouper's IQ_CLK in chip_top.v (32 MHz) -- see that file's
 # shared-clock-domain assumption, not yet validated.
@@ -104,15 +129,24 @@ VERILOG_INCLUDE_DIRS:
 # only through the explicit request/acknowledge CDC bridge.
 CLOCK_PORT: [HCLK, IQ_CLK]
 CLOCK_PERIOD: 31.25
+# Signoff SDC is the P&R SDC plus three signoff-only MCP groups (v28
+# tacc_accumulate / v29 iq_samp_cnt / v30 pcfsm_tick_decrement), ported from
+# Trouper's own signoff split (ip/trouper .../pnr_32m_scoped_v25_b6_signoff.sdc,
+# 2026-08-27). They stay out of the P&R SDC because folding them in perturbs
+# the post-GRT resizer into stranding the IQ_CLK root clkbuf (DRT-0073) at the
+# block level; the placed/routed netlist is identical either way.
 PNR_SDC_FILE: dir::chip_top_dual_clock.sdc
-SIGNOFF_SDC_FILE: dir::chip_top_dual_clock.sdc
+SIGNOFF_SDC_FILE: dir::chip_top_dual_clock_signoff.sdc
 
 FP_SIZING: absolute
 DIE_AREA: [0, 0, 2235, 2235]
 
-# Baseline landscape geometry: a bottom-left 1117.5x1117.5 square and a
-# top-right 558.75x1117.5 rectangle.  These boxes block cell placement only;
-# matching PDN keepouts are set by the P&R runner.
+# Baseline landscape geometry: Obstruction A is the bottom-left 1117.5x1117.5
+# square, Obstruction B the top-right 570x1117.5 rectangle (was 558.75 wide
+# before B's left edge moved 1676.25 -> 1665, see below). These boxes block
+# cell placement only; matching PDN keepouts are set by the P&R runner.
+# Placeable: Grouper takes the NW L-shape (top-left quadrant + the strip west
+# of B), Trouper the SE square (bottom-right quadrant).
 #
 # Obstruction B's left edge moved 1676.25 -> 1665 (job 5051 trial, Strategy A
 # for the DPL-0036/_71880_ failure -- see planning doc item 14/16): the row
@@ -150,20 +184,35 @@ IO_PIN_ORDER_CFG: dir::io_placement_landscape.cfg
 # re-derived for this design's own PDN grid. Needs revisiting once PDN_CFG
 # here has real stripe pitch/offset values.
 #
-# Baseline trial: a known-good 4x1 row (orientation S) in the upper-right of
-# the usable northwest lobe.  It stays west of Obstruction B while leaving
-# the lower NW lobe open for the central neck and Grouper ↔ Trouper routes.
+# 4x1 row (orientation S) in the upper NW lobe, y=1695.67, kept west of
+# Obstruction B (rightmost macro ends at x~1654 < 1665). This is job 5069's
+# signed-off placement -- kept as-is.
 #
-# IMPORTANT, one open gap remains (the other -- chip_top not instantiating
-# Grouper's RAM -- is RESOLVED as of the 2026-08-22 rewrite to instantiate
-# grouper_soc_top directly; instance path below updated to match: chip_top.v
-# names it u_grouper, not u_grouper_soc_top):
+# The row's top (y~2211) sits ~24 um off the die top and forms a solid
+# M1-M3 wall (x~377..1666, halos close the 20 um inter-macro gaps) flush
+# with the north edge. The 2026-08-27 pinout puts ~13 Grouper pins on #N
+# above this; those nets route OVER the macros on Metal4/Metal5 (the LEF
+# OBS blocks M1-M3 only -- M4/M5 are clear) and via down south of the row.
+# Feasible but forces those nets onto M4/M5 for the ~515 um span, sharing
+# the layer with the PDN straps there. If a real run shows congestion /
+# antenna / DRC in that north corridor, move the row down then (e.g.
+# centred y~1418, or bottom-anchored y~1141) -- deferred until the run
+# shows it's needed.
+#
+# chip_top.v names the Grouper instance u_grouper (not u_grouper_soc_top).
+#
+# 2026-08-27: instance keys below updated for dev's memory hierarchy --
+# ram_ss now hangs directly off digital_ss (sibling of u_cpu_ss / u_periph_ss),
+# so the path is u_grouper.u_grouper_soc_dig_ss.u_ram_ss.*, NOT the old
+# ...u_periph_ss.u_ram.u_ram_ss.* from when the array lived inside ahb_ram
+# inside periph_ss. Matches Grouper's own librelane/classic/config.yaml keys
+# (minus the padframe level). Confirm against the netlist after synthesis:
+#   grep -o '[^ ]*u_sram_macro' <run>/*-yosys-synthesis/*.nl.v | sort -u
+#
 # integration/ip/grouper/ip/gf180mcu_ocd_ip_sram/ (Grouper's OWN nested
-# submodule for this macro family) is not initialized in this checkout --
-# confirmed empty 2026-08-22. The gds/lef/vh paths below are correct (match
-# Grouper's own config.yaml convention exactly), but need
-# `git submodule update --init` inside integration/ip/grouper before the
-# files actually exist on disk.
+# submodule for this macro family) IS initialized in this checkout as of
+# 2026-08-27 (145d144). The gds/lef/vh/lib paths below match Grouper's own
+# config.yaml convention exactly.
 MACROS:
   gf180mcu_ocd_ip_sram__sram1024x8m8wm1:
     gds:
@@ -182,16 +231,16 @@ MACROS:
       "*_ff_n40C_3v60":
         - dir::../ip/grouper/ip/gf180mcu_ocd_ip_sram/cells/gf180mcu_ocd_ip_sram__sram1024x8m8wm1/gf180mcu_ocd_ip_sram__sram1024x8m8wm1__ff_n40C_3v60.lib
     instances:
-      "u_grouper.u_grouper_soc_dig_ss.u_periph_ss.u_ram.u_ram_ss.gen_macro_ram.gen_sram[0].u_wrapper.u_sram_macro":
+      "u_grouper.u_grouper_soc_dig_ss.u_ram_ss.gen_macro_ram.gen_sram[0].u_wrapper.u_sram_macro":
         location: [388.65, 1695.67]
         orientation: S
-      "u_grouper.u_grouper_soc_dig_ss.u_periph_ss.u_ram.u_ram_ss.gen_macro_ram.gen_sram[1].u_wrapper.u_sram_macro":
+      "u_grouper.u_grouper_soc_dig_ss.u_ram_ss.gen_macro_ram.gen_sram[1].u_wrapper.u_sram_macro":
         location: [709.95, 1695.67]
         orientation: S
-      "u_grouper.u_grouper_soc_dig_ss.u_periph_ss.u_ram.u_ram_ss.gen_macro_ram.gen_sram[2].u_wrapper.u_sram_macro":
+      "u_grouper.u_grouper_soc_dig_ss.u_ram_ss.gen_macro_ram.gen_sram[2].u_wrapper.u_sram_macro":
         location: [1031.25, 1695.67]
         orientation: S
-      "u_grouper.u_grouper_soc_dig_ss.u_periph_ss.u_ram.u_ram_ss.gen_macro_ram.gen_sram[3].u_wrapper.u_sram_macro":
+      "u_grouper.u_grouper_soc_dig_ss.u_ram_ss.gen_macro_ram.gen_sram[3].u_wrapper.u_sram_macro":
         location: [1352.55, 1695.67]
         orientation: S
 

@@ -30,10 +30,16 @@
 // decode + byte narrowing.
 //
 // Not yet done:
-//   - Grouper's own external padframe (UART pins, GPIO pins) is NOT exposed
-//     at chip_top's own ports -- tied off below. No named/located Grouper
-//     pinout exists on any branch (Open Item #4), so there's nothing real to
-//     wire up yet.
+//   - Grouper's external padframe (UART + GPIO, from ip/grouper/info.yaml) is
+//     now exposed at chip_top -- UART_TX/UART_RX and GPIO_0..15 (2026-08-28,
+//     Open Item #4). GPIO_* are `inout` for interface shape but driven
+//     always-on (no top-level tri-state) for this P&R model, same as
+//     PSRAM_SIO below -- a `1'bz` synthesises to unmappable $_TBUF_ cells
+//     (job 5126). Pad-ring integration must restore OE off gpio_oe (needed
+//     for the GPIO/QSPI mux -- see Pinout.md). Per-pad pull/slew/CS/IE
+//     controls stay on-die (no pad). VSS/VDD are not RTL ports (core-only
+//     design; power is PDN nets) -- they appear only in
+//     io_placement_landscape.cfg as pinout intent.
 //   - Clock domains: HCLK is Grouper's 16 MHz clock and IQ_CLK is Trouper's
 //     32 MHz clock. ahb_to_grp_bridge crosses the GRP control protocol with a
 //     request/acknowledge CDC handshake; no multi-bit control signal crosses
@@ -52,10 +58,10 @@ module chip_top (
     input  wire HRESETn,     // shared active-low reset
 
     // =========================================================================
-    // Trouper pad-level ports -- full real list, passed straight through.
-    // Matches integration/pd/io_placement_landscape.cfg #N/#W (real pins) and
-    // #S/#E (GRP_* bus) exactly; see that file and the planning doc for the
-    // side assignment rationale.
+    // Trouper pad-level ports (SE die quadrant). io_placement_landscape.cfg
+    // puts the radio datapath on #S and PSRAM/IRQ_OUT/power on #E. The GRP_*
+    // bus is internal (u_bridge), not pads. See the planning doc for
+    // rationale.
     // =========================================================================
     input  wire IQ_DATA_I_0, IQ_DATA_I_1, IQ_DATA_I_2, IQ_DATA_I_3,
     input  wire IQ_DATA_Q_0, IQ_DATA_Q_1, IQ_DATA_Q_2, IQ_DATA_Q_3,
@@ -69,17 +75,28 @@ module chip_top (
     input  wire HOST_CS, SPI_SCK, SPI_MOSI,
     output wire SPI_MISO,
 
-    output wire IRQ_OUT
+    output wire IRQ_OUT,
     // NOTE: RESETB is driven by HRESETn above, not a separate chip_top port.
     // IRQ_GROUPER is Trouper's internal name for the same signal as IRQ_OUT
     // (see trouper_top.v) and is consumed inside this module (wired to
     // grouper_top's IRQ input, once grouper_top actually has one exposed --
     // it doesn't yet, see the tie-off below), not exposed as a chip_top pad.
+
+    // =========================================================================
+    // Grouper pad-level ports (NW die quadrant). io_placement_landscape.cfg
+    // puts these on #W (UART + gpio_0..4) and #N (gpio_5..15). Per-pad
+    // pull/slew/CS/IE controls are not brought out.
+    // =========================================================================
+    output wire UART_TX,
+    input  wire UART_RX,
+    inout  wire GPIO_0,  GPIO_1,  GPIO_2,  GPIO_3,  GPIO_4,  GPIO_5,  GPIO_6,  GPIO_7,
+    inout  wire GPIO_8,  GPIO_9,  GPIO_10, GPIO_11, GPIO_12, GPIO_13, GPIO_14, GPIO_15
 );
 
     // =========================================================================
-    // Grouper -- real top-level module, instantiated as-is. UART/GPIO pads
-    // tied off (Open Item #4 -- no Grouper padframe exposed at chip_top yet).
+    // Grouper -- real top-level module, instantiated as-is. UART + GPIO now
+    // wired out to chip_top pads (2026-08-28); per-pad pull/slew/CS/IE
+    // controls stay on-die.
     // =========================================================================
     wire [7:0] ext_HADDR;
     wire [2:0] ext_HBURST;
@@ -93,9 +110,12 @@ module chip_top (
     wire       ext_HREADY;
     wire       ext_HRESP;
 
-    wire uart_tx_unused;
-    wire [15:0] gpio_out_unused, gpio_oe_unused, gpio_cs_unused,
-                gpio_sl_unused, gpio_ie_unused, gpio_pu_unused, gpio_pd_unused;
+    wire [15:0] gpio_out, gpio_oe, gpio_in;
+    // Per-pad pull/slew/chip-select/input-enable controls: no chip_top pad
+    // (see Pinout.md GPIO bank -- these drive the pad cell inside the padring
+    // and never leave the die). Left unconnected at this level.
+    wire [15:0] gpio_cs_unused, gpio_sl_unused, gpio_ie_unused,
+                gpio_pu_unused, gpio_pd_unused;
 
     grouper_soc_top #(
         .NUM_GPIO       (16),
@@ -104,11 +124,11 @@ module chip_top (
     ) u_grouper (
         .clk                    (HCLK),
         .async_rst_n            (HRESETn),
-        .uart_tx                (uart_tx_unused),
-        .uart_rx                (1'b1),          // idle-high, no Grouper padframe yet
-        .gpio_in                (16'h0000),
-        .gpio_out               (gpio_out_unused),
-        .gpio_oe                (gpio_oe_unused),
+        .uart_tx                (UART_TX),
+        .uart_rx                (UART_RX),
+        .gpio_in                (gpio_in),
+        .gpio_out               (gpio_out),
+        .gpio_oe                (gpio_oe),
         .gpio_cs                (gpio_cs_unused),
         .gpio_sl                (gpio_sl_unused),
         .gpio_ie                (gpio_ie_unused),
@@ -126,6 +146,23 @@ module chip_top (
         .ext_ahb_m_if_HREADY    (ext_HREADY),
         .ext_ahb_m_if_HRESP     (ext_HRESP)
     );
+
+    // Grouper GPIO pads. Kept as `inout` for the correct interface shape,
+    // but driven WITHOUT a top-level tri-state for this P&R-only model --
+    // same reasoning/precedent as PSRAM_SIO above: a `1'bz` here synthesises
+    // to `$_TBUF_` primitives this flow cannot map (job 5126: 16 unmapped
+    // cells, "Area for cell type $_TBUF_ is unknown"). The pad-ring
+    // integration must restore output-enable control off gpio_oe.
+    assign gpio_in = {GPIO_15, GPIO_14, GPIO_13, GPIO_12,
+                      GPIO_11, GPIO_10, GPIO_9,  GPIO_8,
+                      GPIO_7,  GPIO_6,  GPIO_5,  GPIO_4,
+                      GPIO_3,  GPIO_2,  GPIO_1,  GPIO_0};
+
+    assign {GPIO_15, GPIO_14, GPIO_13, GPIO_12,
+            GPIO_11, GPIO_10, GPIO_9,  GPIO_8,
+            GPIO_7,  GPIO_6,  GPIO_5,  GPIO_4,
+            GPIO_3,  GPIO_2,  GPIO_1,  GPIO_0} = gpio_out;
+    // gpio_oe (connected above) is intentionally not consumed at this level.
 
     // =========================================================================
     // AHB <-> GRP_* bridge -- 8-bit, sits directly on grouper_top's external
