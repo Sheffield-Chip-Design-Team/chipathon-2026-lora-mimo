@@ -122,11 +122,12 @@ VERILOG_DEFINES:
 VERILOG_INCLUDE_DIRS:
 - dir::../ip/grouper/sw/boot
 
-# HCLK is tied to Trouper's IQ_CLK in chip_top.v (32 MHz) -- see that file's
-# shared-clock-domain assumption, not yet validated.
-# The combined chip has genuinely asynchronous 16 MHz (Grouper) and 32 MHz
-# (Trouper) external clocks. The SDC below creates both clocks and cuts timing
-# only through the explicit request/acknowledge CDC bridge.
+# The combined chip has genuinely asynchronous HCLK (Grouper, 25 MHz test-chip
+# target -- integration/planning/Open Risks.md #4) and IQ_CLK (Trouper, 32 MHz)
+# external clocks. The SDC below (chip_top_dual_clock.sdc) creates both clocks
+# and cuts timing only through the explicit request/acknowledge CDC bridge.
+# The CLOCK_PORT / CLOCK_PERIOD keys below are placeholders that the dual-clock
+# SDC overrides.
 CLOCK_PORT: [HCLK, IQ_CLK]
 CLOCK_PERIOD: 31.25
 # Signoff SDC is the P&R SDC plus three signoff-only MCP groups (v28

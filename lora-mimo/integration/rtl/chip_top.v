@@ -40,8 +40,9 @@
 //     controls stay on-die (no pad). VSS/VDD are not RTL ports (core-only
 //     design; power is PDN nets) -- they appear only in
 //     io_placement_landscape.cfg as pinout intent.
-//   - Clock domains: HCLK is Grouper's 16 MHz clock and IQ_CLK is Trouper's
-//     32 MHz clock. ahb_to_grp_bridge crosses the GRP control protocol with a
+//   - Clock domains: HCLK is Grouper's clock (25 MHz test-chip target, was
+//     16 MHz baseline -- Open Risks #4) and IQ_CLK is Trouper's 32 MHz clock.
+//     ahb_to_grp_bridge crosses the GRP control protocol with a
 //     request/acknowledge CDC handshake; no multi-bit control signal crosses
 //     directly between the domains.
 //   - Reset polarity: grouper_top's `async_rst_n` and trouper_top's RESETB

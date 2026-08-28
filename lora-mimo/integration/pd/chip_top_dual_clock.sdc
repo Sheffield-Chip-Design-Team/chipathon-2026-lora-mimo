@@ -13,22 +13,25 @@
 current_design chip_top
 set_units -time ns
 
-create_clock -name HCLK16  -period 62.5  [get_ports HCLK]
+# HCLK is Grouper's clock. Test-chip target is 25 MHz (40 ns) -- see
+# integration/planning/Open Risks.md #4. The clock was named HCLK16 while the
+# 16 MHz baseline was current; renamed HCLK25 with the 2026-08-28 retarget.
+create_clock -name HCLK25  -period 40.0  [get_ports HCLK]
 create_clock -name IQ_CLK32 -period 31.25 [get_ports IQ_CLK]
 
 set_clock_groups -asynchronous \
-    -group [get_clocks HCLK16] \
+    -group [get_clocks HCLK25] \
     -group [get_clocks IQ_CLK32]
 
 # Do not apply I/O delay to either clock input itself. Other top-level I/O
 # remains unconstrained pending the package-level pin/interface timing budget.
-set_clock_uncertainty 0.5 [get_clocks HCLK16]
+set_clock_uncertainty 0.5 [get_clocks HCLK25]
 set_clock_uncertainty 0.5 [get_clocks IQ_CLK32]
 
 # =============================================================================
 # ahb_to_grp_bridge CDC payload bounds (F2, branch timn/ahb-bridge-cdc-review)
 #
-# set_clock_groups -asynchronous above already makes every HCLK16 <-> IQ_CLK32
+# set_clock_groups -asynchronous above already makes every HCLK25 <-> IQ_CLK32
 # path false. The bundled-data CDC inside u_bridge is safe under that cut ONLY
 # if the request / response payload nets settle at their capture flop within
 # about one destination-clock period of the synchronized request / ack toggle
@@ -39,17 +42,17 @@ set_clock_uncertainty 0.5 [get_clocks IQ_CLK32]
 # is one full destination period -- conservative, meant to catch a gross
 # routing blow-up, not to tighten a real path.
 #
-#   request_addr / request_wdata / request_write : launched by HCLK16,
-#       captured in the IQ_CLK32 domain  -> bound to the IQ_CLK32 period.
-#   response_rdata : launched by IQ_CLK32, captured in the HCLK16 domain
-#       -> bound to the HCLK16 period. If HCLK moves to 25 MHz (Open Risks
-#       #4), change 62.5 to 40.0 here and in chip_top_dual_clock_signoff.sdc.
+#   request_addr / request_wdata / request_write : launched by HCLK25,
+#       captured in the IQ_CLK32 domain  -> bound to the IQ_CLK32 period (31.25).
+#   response_rdata : launched by IQ_CLK32, captured in the HCLK25 domain
+#       -> bound to the HCLK25 period (40.0). Keep this second value equal to
+#       the HCLK period if it is retargeted again.
 # =============================================================================
 set brg_req_payload  [get_nets -hierarchical \
     {u_bridge.request_addr[*] u_bridge.request_wdata[*] u_bridge.request_write}]
 set brg_resp_payload [get_nets -hierarchical {u_bridge.response_rdata[*]}]
 set_max_delay -datapath_only 31.25 -through $brg_req_payload
-set_max_delay -datapath_only 62.5  -through $brg_resp_payload
+set_max_delay -datapath_only 40.0  -through $brg_resp_payload
 
 # =============================================================================
 # Trouper IQ_CLK32-domain multicycle exceptions, ported from Trouper's own

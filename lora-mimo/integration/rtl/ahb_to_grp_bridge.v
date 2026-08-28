@@ -2,9 +2,10 @@
 //
 // CDC-safe AHB (HCLK) to Trouper GRP (IQ_CLK) bridge.
 //
-// The two clocks are intentionally unrelated: Grouper runs at 16 MHz (25 MHz
-// on the test chip -- integration/planning/Open Risks.md #4) while Trouper's
-// IQ clock runs at 32 MHz. A request-toggle / acknowledge-toggle handshake
+// The two clocks are intentionally unrelated: Grouper's HCLK runs at 25 MHz on
+// the test chip (16 MHz baseline -- integration/planning/Open Risks.md #4)
+// while Trouper's IQ clock runs at 32 MHz. A request-toggle / acknowledge-toggle
+// handshake
 // transfers one transaction at a time. The request bundle is held stable in
 // the HCLK domain from before its toggle crosses into IQ_CLK until the
 // acknowledge toggle crosses back; the response bundle is held stable in

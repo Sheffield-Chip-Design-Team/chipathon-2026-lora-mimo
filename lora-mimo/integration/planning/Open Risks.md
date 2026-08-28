@@ -191,7 +191,8 @@ Liberty), or have an `ss_025C_3v50`-ish corner characterised, before the
 slice (#1) — RAM is off the AHB fabric.
 **See:** planning doc item 20 (job 5131 full result + the feasibility
 argument); item 18 (voltage-proxy precedent); `integration/pd/chip_top_dual_clock.sdc`
-(`create_clock -name HCLK16`).
+(`create_clock -name HCLK25 -period 40.0`; renamed from HCLK16 / 62.5 on the
+2026-08-28 retarget, branch `timn/ahb-bridge-cdc-review`).
 **Found:** 2026-08-28.
 
 ### 5. `ahb_to_grp_bridge` captures GRP read data on a fixed delay, not on `GRP_READY`
