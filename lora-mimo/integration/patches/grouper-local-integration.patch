@@ -17,6 +17,10 @@ Contents:
                                non-word-aligned lbu from the ext-periph window
                                reads the right byte (see
                                planning/grp-ext-periph-byte-lane.md).
+  sw/src/config.h            - #ifndef-guard SYS_CLK_HZ so the integration
+                               firmware build can set the 25 MHz test-chip HCLK
+                               (-DSYS_CLK_HZ=25000000); UART baud divisor and
+                               gtime delays are computed against it.
 
 Apply:   git -C lora-mimo/integration/ip/grouper apply \
              lora-mimo/integration/patches/grouper-local-integration.patch
@@ -287,3 +291,20 @@ index 0c1fb70..7c7d5c9 100644
    assign ext_periph_HREADYOUT = ext_HREADY;
    assign ext_periph_HRESP     = ext_HRESP;
  
+diff --git a/sw/src/config.h b/sw/src/config.h
+index 93908df..f3b291f 100644
+--- a/sw/src/config.h
++++ b/sw/src/config.h
+@@ -9,7 +9,12 @@
+ // delay helpers convert microseconds with it, so it must match the clock the
+ // SoC is actually run at. The top-level testbench cross-checks its own
+ // CLK_FREQ localparam against this value (hw/tb/top/grouper_soc_hello_tb.sv).
++// LOCAL INTEGRATION PATCH (not upstream): guard so the chip_top integration
++// build can override to the 25 MHz test-chip HCLK target
++// (-DSYS_CLK_HZ=25000000). Standalone Grouper keeps 10 MHz.
++#ifndef SYS_CLK_HZ
+ #define SYS_CLK_HZ  10000000
++#endif
+ 
+ // --- Memory ---------------------------------------------------------------
+ //
