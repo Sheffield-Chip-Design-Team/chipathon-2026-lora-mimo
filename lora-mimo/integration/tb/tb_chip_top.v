@@ -1,28 +1,37 @@
 // tb_chip_top.v
 // End-to-end connectivity test for chip_top (Open Item #1): a real Grouper CPU,
-// fetching a 4-instruction program from its own ROM, drives a single MMIO byte
-// write that must traverse the entire cross-project path
+// fetching a program from its own ROM, drives MMIO traffic that must traverse
+// the entire cross-project path
 //
 //   picorv32 -> cpu_ss -> ahb_conn_buff CPU->periph pipe -> periph_ss
 //   -> interconnect_ss (EXT_PERIPH decode) -> ext_ahb_m_if
 //   -> ahb_to_grp_bridge  (HCLK 25 MHz  ->  IQ_CLK 32 MHz  bundled-data CDC)
 //   -> trouper_top GRP_* bus -> register arbiter -> reg_bank
 //
-// and land in Trouper's MIMO_CTRL register. The result is read back over
-// Trouper's SPI slave port, an oracle that shares none of the AHB/GRP path, so
-// a bug anywhere in that path cannot also fool the checker.
+// with real RTL on both sides. Results are read back over Trouper's SPI slave
+// port -- an oracle that shares none of the AHB/GRP path.
+//
+//   T1  MIMO_CTRL write (single ungated GRP write).
+//   T2  W shadow bank 0x30..0x3F written 0xB0..0xBF -- GRP writes at every
+//       byte lane (picorv32 replicates the store byte across all 4 AHB lanes).
+//   T3  GRP read alignment: an aligned byte read returns the register, an
+//       unaligned byte read returns 0. This is a real limitation of Grouper's
+//       8-bit ext-periph port, not a bug in the bridge -- periph_ss
+//       zero-extends ext_HRDATA into HRDATA[7:0] while picorv32 byte-extracts
+//       a load from HRDATA[8*addr[1:0] +: 8]. Grouper firmware can only read
+//       GRP registers at word-aligned byte offsets; Trouper's byte-packed
+//       Z_kl / Z_kk / N_ACC windows are not fully readable this way.
+//       See integration/planning/grp-ext-periph-byte-lane.md.
 //
 // This is the first *simulation* of grouper's local ahb_conn_buff CPU->periph
-// pipeline patch (digital_ss.sv: "Lint-clean; NOT simulated") and of the
-// CDC-hardened ahb_to_grp_bridge (F1/F3/F7) against real RTL on both sides.
+// pipeline patch (digital_ss.sv: "Lint-clean; NOT simulated"), of the
+// CDC-hardened ahb_to_grp_bridge (F1/F3/F7) against real RTL end to end, and
+// the first to drive GRP reads from real CPU code.
 //
-// Program: integration/fw/chip_top_smoke.S  ->  code.hex  (loaded by rom_ss.sv
-// via $readmemh from the simulator's working directory). Build it with
-// integration/fw/build_chip_top_smoke.sh; scripts/run_tb_chip_top.sh does both.
-//
-// Simulator: Verilator 5.x, --binary --timing (grouper dev RTL uses
-// `case () inside`, which iverilog rejects -- see
-// integration/scripts/check_chip_top.sh). Run: scripts/run_tb_chip_top.sh
+// Program: integration/fw/chip_top_smoke.S -> code.hex (loaded by rom_ss.sv via
+// $readmemh from the working directory). Build + run: scripts/run_tb_chip_top.sh
+// (Verilator 5, --binary --timing; iverilog cannot elaborate grouper dev RTL,
+// see integration/scripts/check_chip_top.sh).
 
 `timescale 1ns/1ps
 `default_nettype none
@@ -30,22 +39,20 @@
 module tb_chip_top;
 
     // ---- Clocks -----------------------------------------------------------
-    // chip_top: HCLK is Grouper's 25 MHz test-chip clock, IQ_CLK Trouper's
-    // 32 MHz. Deliberately unrelated -- exercises the bridge CDC.
     reg hclk   = 1'b0;
     reg iq_clk = 1'b0;
-    always #20.000  hclk   = ~hclk;    // 25   MHz
-    always #15.625  iq_clk = ~iq_clk;  // 32   MHz
+    always #20.000  hclk   = ~hclk;    // 25   MHz  (Grouper HCLK, test chip)
+    always #15.625  iq_clk = ~iq_clk;  // 32   MHz  (Trouper IQ_CLK)
 
     reg hresetn = 1'b0;
 
-    // ---- Trouper radio pads: unused, tied idle ---------------------------
+    // ---- Trouper radio pads: unused, tied idle --------------------------
     wire iq_i0 = 1'b0, iq_i1 = 1'b0, iq_i2 = 1'b0, iq_i3 = 1'b0;
     wire iq_q0 = 1'b0, iq_q1 = 1'b0, iq_q2 = 1'b0, iq_q3 = 1'b0;
 
     // ---- Grouper pads --------------------------------------------------
     wire        uart_tx;
-    wire        uart_rx = 1'b1;         // UART idle high
+    wire        uart_rx = 1'b1;
     wire [15:0] gpio;                   // driven by chip_top (P&R model), not here
 
     // ---- Trouper misc outputs ---------------------------------------
@@ -55,7 +62,7 @@ module tb_chip_top;
     wire irq_out;
 
     // ---- SPI oracle pads (host side) ------------------------------------
-    reg  spi_cs   = 1'b1;               // active low
+    reg  spi_cs   = 1'b1;
     reg  spi_sck  = 1'b0;
     reg  spi_mosi = 1'b0;
     wire spi_miso;
@@ -93,15 +100,28 @@ module tb_chip_top;
         .GPIO_12(gpio[12]), .GPIO_13(gpio[13]), .GPIO_14(gpio[14]), .GPIO_15(gpio[15])
     );
 
-    // ROM hierarchical handle -- rom_ss.sv self-loads code.hex via $readmemh,
-    // but re-load explicitly so a wrong working directory fails loud here
-    // instead of as a mysterious CPU lockup, and so we can assert it is non-empty.
     localparam ROM = "code.hex";
 
+    // Trouper channel-estimate readback (Z_kl pairs) is normally driven by
+    // training_acc, which needs a full IQ preamble + training run to produce
+    // anything. This is an interface test, not a DSP test: force the reg_bank
+    // input wires to a known pattern (leave them forced; no IQ stimulus, so
+    // training_acc has nothing real to say). reg_bank exposes bits [31:8] of
+    // each, big-endian, at 0x40..: 0x40=i0[31:24] 0x45=q0[15:8] etc.
+    task force_z_pattern;
+        begin
+            force dut.u_trouper.Zpair_i[0] = 32'h11223300;
+            force dut.u_trouper.Zpair_q[0] = 32'h44556600;
+            force dut.u_trouper.Zpair_i[1] = 32'h77889900;
+            force dut.u_trouper.Zpair_q[1] = 32'hAABBCC00;
+            force dut.u_trouper.Zpair_i[2] = 32'hDDEEF000;
+            force dut.u_trouper.Zpair_q[2] = 32'h12345600;
+        end
+    endtask
+
     // =====================================================================
-    // SPI master model (Mode 0, MSB first) -- ported verbatim in behaviour
-    // from trouper's tb_trouper_grp_arb.v / the grouper<->trouper feature-branch
-    // testbench: 7-bit addr + R/W# bit in the command byte, then data bytes.
+    // SPI master model (Mode 0, MSB first): 7-bit addr + R/W# bit in the
+    // command byte, then data bytes; burst reads auto-increment the address.
     // =====================================================================
     localparam real SCK_HALF = 62.5;   // 8 MHz, within Trouper's 10 MHz max
 
@@ -126,22 +146,33 @@ module tb_chip_top;
         reg [7:0] dump;
         begin
             spi_start;
-            spi_byte({1'b1, a}, dump);   // command: R/W#=1 (read), addr
-            spi_byte(8'h00, d);          // one data byte clocked out on MISO
+            spi_byte({1'b1, a}, dump);
+            spi_byte(8'h00, d);
             spi_stop;
         end
     endtask
 
-    // ---- Scoreboard ----------------------------------------------------
+    reg [7:0] burst [0:15];
+    task spi_read_burst(input [6:0] a, input integer n);
+        integer k; reg [7:0] dump;
+        begin
+            spi_start;
+            spi_byte({1'b1, a}, dump);
+            for (k = 0; k < n; k = k + 1) spi_byte(8'h00, burst[k]);
+            spi_stop;
+        end
+    endtask
+
+    // ---- Scoreboard --------------------------------------------------
     integer errors = 0;
 
     task check(input [511:0] name, input [7:0] got, input [7:0] exp);
         begin
             if (got !== exp) begin
-                $display("FAIL  %-44s got 0x%02h expected 0x%02h", name, got, exp);
+                $display("FAIL  %-46s got 0x%02h expected 0x%02h", name, got, exp);
                 errors = errors + 1;
             end else begin
-                $display("pass  %-44s 0x%02h", name, got);
+                $display("pass  %-46s 0x%02h", name, got);
             end
         end
     endtask
@@ -150,16 +181,21 @@ module tb_chip_top;
     // Test sequence
     // =====================================================================
     reg [7:0] rd;
-    localparam [6:0] ADDR_CHIP_ID  = 7'h00;   // RO, constant 0xA7
-    localparam [6:0] ADDR_MIMO     = 7'h08;   // reset 0xF0; program writes 0x31
-
-    integer i;
+    integer   i;
+    localparam [6:0] ADDR_CHIP_ID = 7'h00;   // RO, constant 0xA7
+    localparam [6:0] ADDR_MIMO    = 7'h08;   // reset 0xF0; T1 writes 0x31
+    localparam [6:0] ADDR_SCTHR_H = 7'h0C;   // T3 scratch: aligned read result
+    localparam [6:0] ADDR_SCTHR_L = 7'h0D;   // T3 scratch: unaligned read result
+    localparam [6:0] ADDR_W_BASE  = 7'h30;   // W shadow bank 0x30..0x3F
+    localparam [6:0] ADDR_Z_BASE  = 7'h40;   // Z_kl readback 0x40..
 
     initial begin
 `ifdef DUMP
         $dumpfile("tb_chip_top.vcd");
         $dumpvars(0, tb_chip_top);
 `endif
+        force_z_pattern;
+
         // Fail fast if code.hex is not where rom_ss.sv looks for it.
         $readmemh(ROM, dut.u_grouper.u_grouper_soc_dig_ss.u_rom_ss.memory);
         if (dut.u_grouper.u_grouper_soc_dig_ss.u_rom_ss.memory[0] === 32'hxxxxxxxx
@@ -169,41 +205,68 @@ module tb_chip_top;
             $finish;
         end
 
-        // Reset: hold both domains well past their 2-FF resync depth.
         hresetn = 1'b0;
         repeat (20) @(posedge hclk);
         hresetn = 1'b1;
 
-        // Let the CPU run lui/addi/sb/j. The single sb blocks on HREADY for the
-        // whole ahb_conn_buff wait-state + bridge CDC round trip; give a wide
-        // margin over that (a few thousand HCLK cycles is >100x the worst case).
-        repeat (4000) @(posedge hclk);
+        // Let the CPU run T1 (1 write), T2 (16 writes), T3 (2 reads + 2 writes).
+        // Each GRP access blocks on HREADY for the full ahb_conn_buff + bridge
+        // CDC round trip; 8000 HCLK is many times the worst case.
+        repeat (8000) @(posedge hclk);
 
-        // Sanity: the SPI oracle itself works (independent of the AHB path).
+        // Oracle sanity: SPI path itself works, independent of the AHB path.
         spi_read(ADDR_CHIP_ID, rd);
         check("CHIP_ID over SPI (oracle sanity)", rd, 8'hA7);
 
-        // Priming read: discard. The very first SPI transaction against a
-        // freshly reset trouper spi_slave has historically returned 0x00
-        // regardless of register contents (a spi_slave quirk, not this path);
-        // Open Risks #26 hardening may have fixed it, but prime anyway so the
-        // checked read is never the first.
+        // Priming read (discard): the first SPI transaction after reset has
+        // historically returned 0x00 regardless of contents (spi_slave quirk,
+        // Open Risks #26); never let the checked read be the first.
         spi_read(ADDR_MIMO, rd);
 
-        // Independent oracle: read MIMO_CTRL back over SPI.
+        // ---- T1 ------------------------------------------------------
         spi_read(ADDR_MIMO, rd);
-        check("MIMO_CTRL after CPU->AHB->bridge->GRP write", rd, 8'h31);
+        check("T1  MIMO_CTRL  <- CPU GRP write", rd, 8'h31);
+
+        // ---- T2: W shadow bank, every byte lane -------------------
+        // Inline (not check()): $sformatf into check()'s packed-vector arg
+        // comes through blank under Verilator, so summarise the 16 in one line.
+        spi_read_burst(ADDR_W_BASE, 16);
+        begin : t2
+            integer bad;
+            bad = 0;
+            for (i = 0; i < 16; i = i + 1)
+                if (burst[i] !== 8'hB0 + i[7:0]) begin
+                    $display("FAIL  T2  W[0x%02h]  got 0x%02h expected 0x%02h",
+                             8'h30 + i, burst[i], 8'hB0 + i[7:0]);
+                    bad = bad + 1;
+                end
+            if (bad == 0)
+                $display("pass  T2  W[0x30..0x3F] <- CPU GRP write, all 16 byte lanes  (0xB0..0xBF)");
+            errors = errors + bad;
+        end
+
+        // ---- T3: GRP read alignment ------------------------------
+        // Ground truth for the forced Z pattern (SPI peek path, all lanes).
+        spi_read(ADDR_Z_BASE + 7'h00, rd); check("T3  Z[0x40] forced (SPI ground truth)", rd, 8'h11);
+        spi_read(ADDR_Z_BASE + 7'h01, rd); check("T3  Z[0x41] forced (SPI ground truth)", rd, 8'h22);
+
+        // CPU read results parked in SC_THR scratch by the firmware.
+        spi_read(ADDR_SCTHR_H, rd);
+        check("T3  CPU aligned GRP read (lbu 0x08 -> 0x0C)", rd, 8'h31);
+        spi_read(ADDR_SCTHR_L, rd);
+        check("T3  CPU unaligned GRP read returns 0 (lbu 0x09 -> 0x0D)", rd, 8'h00);
+        $display("     ^ expected: Grouper 8-bit ext-periph port carries byte lane 0 only");
+        $display("       (periph_ss HRDATA[7:0]) -- see grp-ext-periph-byte-lane.md");
 
         if (errors == 0)
-            $display("\nTB PASS - Grouper CPU -> AHB -> ahb_to_grp_bridge -> Trouper reg_bank write verified over SPI");
+            $display("\nTB PASS - T1 write, T2 all-lane writes, T3 read-alignment all as specified");
         else
             $display("\nTB FAIL - %0d error(s)", errors);
         $finish;
     end
 
-    // Global timeout
     initial begin
-        #500_000;
+        #1_000_000;
         $display("TB FAIL - timeout (no $finish reached)");
         $finish;
     end
