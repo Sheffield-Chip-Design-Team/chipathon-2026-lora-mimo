@@ -1,0 +1,46 @@
+CAPI=2:
+name: lora_mimo:integration:grouper_trouper_nwmrc_e2e:0.1.0
+description: Grouper firmware to Trouper noise-weighted MRC end-to-end test
+
+parameters:
+  MACRO_RAM:
+    datatype: bool
+    paramtype: vlogdefine
+    default: false
+
+filesets:
+  rtl:
+    depend:
+      - sharc:soc_ip:grouper_soc:0.0.1
+    files:
+      - rtl/ahb_to_grp_bridge.v: {file_type: verilogSource}
+      - ip/trouper/src/top/trouper_top.v: {file_type: verilogSource}
+      - ip/trouper/src/decimator/sd_decimator_poly.v: {file_type: verilogSource}
+      - ip/trouper/src/frontend/dc_removal.v: {file_type: verilogSource}
+      - ip/trouper/src/frontend/sc_detector.v: {file_type: verilogSource}
+      - ip/trouper/src/combiner/training_acc.v: {file_type: verilogSource}
+      - ip/trouper/src/combiner/mrc_combiner.v: {file_type: verilogSource}
+      - ip/trouper/src/control/packet_ctrl_fsm.v: {file_type: verilogSource}
+      - ip/trouper/src/control/psram_buf_ctrl.v: {file_type: verilogSource}
+      - ip/trouper/src/control/spi_slave.v: {file_type: verilogSource}
+      - ip/trouper/src/control/reg_bank.v: {file_type: verilogSource}
+      - ip/trouper/src/remod/sd_remod.v: {file_type: verilogSource}
+      - ip/trouper/cocotb/hdl/psram_model.v: {file_type: verilogSource}
+      - ram_backdoor/tb_grouper_trouper_psram.v: {file_type: verilogSource}
+
+scripts:
+  build_images:
+    cmd: [bash, /foss/designs/integration/ram_backdoor/build_nwmrc_images.sh]
+
+targets:
+  sim:
+    filesets: [rtl]
+    flow: sim
+    toplevel: tb_grouper_trouper_psram
+    parameters: [MACRO_RAM=true]
+    hooks:
+      pre_build: [build_images]
+    flow_options:
+      tool: verilator
+      cocotb_module: test_grouper_trouper_nwmrc_e2e
+      verilator_options: [--timing, --public-flat-rw, --coverage, -Wno-fatal, -Wno-TIMESCALEMOD]
