@@ -78,9 +78,7 @@ module chip_top (
     output wire IRQ_OUT,
     // NOTE: RESETB is driven by HRESETn above, not a separate chip_top port.
     // IRQ_GROUPER is Trouper's internal name for the same signal as IRQ_OUT
-    // (see trouper_top.v) and is consumed inside this module (wired to
-    // grouper_top's IRQ input, once grouper_top actually has one exposed --
-    // it doesn't yet, see the tie-off below), not exposed as a chip_top pad.
+    // (see trouper_top.v). It is consumed inside this module by Grouper.
 
     // =========================================================================
     // Grouper pad-level ports (NW die quadrant). io_placement_landscape.cfg
@@ -126,6 +124,7 @@ module chip_top (
         .async_rst_n            (HRESETn),
         .uart_tx                (UART_TX),
         .uart_rx                (UART_RX),
+        .ext_irq                (irq_grouper_w),
         .gpio_in                (gpio_in),
         .gpio_out               (gpio_out),
         .gpio_oe                (gpio_oe),
@@ -211,8 +210,7 @@ module chip_top (
     assign psram_sio_in_3 = PSRAM_SIO_3;
 
     assign IRQ_OUT = irq_out_w;
-    // irq_grouper_w (IRQ_GROUPER, same signal as IRQ_OUT) isn't consumed yet --
-    // grouper_top has no IRQ input exposed at its own port list (Open Item #4).
+    // IRQ_GROUPER feeds Grouper's synchronized external interrupt input.
 
     trouper_top u_trouper (
         .IQ_CLK          (IQ_CLK),
